@@ -81,7 +81,7 @@ The layout matches a professional canvas editor, all in black and white:
 - **Toolbar** (41 px, vertical, between the left panel and the canvas): Move (V), Frame (F), Rectangle (R), Text (T), Image (I), Hand (H). Lucide icons, 36×32 buttons, the active tool shown as a filled black button with a white icon.
 - **Canvas**: infinite plane with artboards and artboard name labels. Zoom from 2% to 25,600%. Space+drag or middle-drag to pan, pinch or Mod+wheel to zoom.
 - **Right inspector** (280 px, 48 px header holding zoom and export): sections in order: Position and size, Layout (freeform or flex: direction, gap, padding, alignment, wrap), Appearance (opacity, radius, blend), Fill, Border, Shadow, Typography (text nodes only), Effects, Export. With nothing selected it shows page settings and the file's tokens.
-- **Home**: recent files, new file, open file, drag a `.spark` file in.
+- **Home**: recent files, new file, open file, drag a `.spark` file in. Archiving a recent file moves it (with its SQLite side files) into `Archive` in the files dir and off the list; a file open in a tab, or with edits that failed to save, stays put.
 - **Agent panel** (toggle Mod+J): shows connected agents and a log of their tool calls. It can also start a local agent CLI with Spark's MCP preconfigured and stream its output (see Agents).
 - **Design tokens** live in a tokens view with editing, aliases and CSS export.
 

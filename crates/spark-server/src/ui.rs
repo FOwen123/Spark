@@ -243,6 +243,10 @@ fn handle(hub: &Arc<Hub>, client: ClientId, tx: &Tx, msg: Value) {
             });
             reply(tx, &rid, r);
         }
+        "archive" => {
+            let r = hub.archive(msg["id"].as_str().unwrap_or_default()).map(|p| json!({"path": p}));
+            reply(tx, &rid, r);
+        }
         "close" => {
             if let Some(d) = hub.get(file) {
                 d.lock().unwrap().subscribers.remove(&client);

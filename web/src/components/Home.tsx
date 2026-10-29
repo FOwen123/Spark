@@ -1,4 +1,4 @@
-import { FilePlus, FolderOpen, Plug } from "lucide-react";
+import { Archive, FilePlus, FolderOpen, Plug } from "lucide-react";
 import { ConnectDialog } from "./ConnectDialog";
 import { useEffect, useRef, useState } from "react";
 import type { Conn } from "../lib/conn";
@@ -19,6 +19,7 @@ export function Home(props: { conn: Conn; token: string; onOpen: (ref: string) =
   const [recent, setRecent] = useState<Recent[]>([]);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [archived, setArchived] = useState<string | null>(null);
   const [connect, setConnect] = useState(false);
   const [native, setNative] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -29,6 +30,18 @@ export function Home(props: { conn: Conn; token: string; onOpen: (ref: string) =
       setNative(r.native);
     });
   }, [props.conn]);
+
+  async function archive(f: Recent) {
+    setError(null);
+    try {
+      const r = await props.conn.request<{ path: string }>({ t: "archive", id: f.id });
+      setRecent((list) => list.filter((x) => x.id !== f.id));
+      setArchived(`Moved ${f.name} to ${r.path}`);
+    } catch (e) {
+      setArchived(null);
+      setError((e as Error).message);
+    }
+  }
 
   async function upload(file: File) {
     setError(null);
@@ -98,17 +111,27 @@ export function Home(props: { conn: Conn; token: string; onOpen: (ref: string) =
           />
         </div>
         {(error ?? props.error) && <p className="mt-4 text-base text-fg-2">⚠ {error ?? props.error}</p>}
+        {archived && !error && <p className="mt-4 text-base text-fg-2">{archived}</p>}
         <h2 className="mt-12 mb-2 text-sm font-medium text-fg-3 uppercase">Recent</h2>
         {recent.length === 0 ? (
           <p className="text-base text-fg-3">No files yet. Create one, or drop a .spark file here.</p>
         ) : (
           <ul className="divide-y divide-line border-y border-line" aria-label="Recent files">
             {recent.map((f) => (
-              <li key={f.id}>
-                <button type="button" onClick={() => props.onOpen(f.id)} className="flex w-full items-center gap-3 px-2 py-2.5 text-left hover:bg-hover">
+              <li key={f.id} className="group flex items-center hover:bg-hover">
+                <button type="button" onClick={() => props.onOpen(f.id)} className="flex min-w-0 flex-1 items-center gap-3 py-2.5 pl-2 text-left">
                   <span className="flex-1 truncate text-base">{f.name}</span>
                   <span className="max-w-[320px] truncate font-mono text-xs text-fg-3">{f.path}</span>
                   <span className="w-20 shrink-0 text-right text-sm text-fg-3">{ago(f.openedAt)}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Archive ${f.name}`}
+                  title="Archive: move the file to the Archive folder and off this list"
+                  onClick={() => archive(f)}
+                  className="mx-1 grid size-7 shrink-0 place-items-center rounded-control text-fg-3 opacity-0 group-hover:opacity-100 hover:bg-line hover:text-fg focus-visible:opacity-100"
+                >
+                  <Archive size={14} strokeWidth={1.5} />
                 </button>
               </li>
             ))}

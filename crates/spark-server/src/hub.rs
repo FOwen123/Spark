@@ -185,6 +185,38 @@ impl Hub {
         self.docs.lock().unwrap().get(id).cloned()
     }
 
+    /// Archives a file from the recent list (see `Config::archive`). Refuses while a tab has it open
+    /// or it holds edits Spark couldn't save; otherwise unloads it first so its store is closed.
+    pub fn archive(&self, id: &str) -> Result<PathBuf, String> {
+        let path = {
+            let mut docs = self.docs.lock().unwrap();
+            if let Some(d) = docs.get(id) {
+                {
+                    let o = d.lock().unwrap();
+                    if !o.subscribers.is_empty() {
+                        return Err(format!("{} is open in a tab. Close it first.", o.editor.doc.name));
+                    }
+                    if o.save_error.is_some() {
+                        return Err(format!(
+                            "Spark couldn't save the latest edits to {}. Open it and fix that first.",
+                            o.editor.doc.name
+                        ));
+                    }
+                }
+                if Arc::strong_count(d) > 1 {
+                    return Err("An agent is using this file right now. Try again in a moment.".into());
+                }
+                let d = docs.remove(id).unwrap();
+                let path = d.lock().unwrap().path.clone();
+                drop(d); // Closes the store, which flushes the WAL into the file.
+                path
+            } else {
+                self.config.recent().into_iter().find(|f| f.id == id).ok_or("This file isn't in the recent list.")?.path
+            }
+        };
+        self.config.archive(id, &path)
+    }
+
     fn register(&self, store: Store, doc: Document, path: &Path) -> DocRef {
         let id = doc.id.clone();
         let mut docs = self.docs.lock().unwrap();
