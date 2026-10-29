@@ -114,6 +114,40 @@ impl Config {
         }
     }
 
+    /// Moves a file (with any SQLite side files) into `Archive` in the files dir and takes it off
+    /// the recent list. Returns where it went. The caller makes sure Spark isn't holding it open.
+    pub fn archive(&self, id: &str, path: &Path) -> Result<PathBuf, String> {
+        let _edit = EDITS.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = self.files_dir.join("Archive");
+        let dest = if path.parent() == Some(dir.as_path()) {
+            path.to_path_buf()
+        } else {
+            fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
+            let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Untitled".into());
+            let dest = (1..)
+                .map(|i| dir.join(if i == 1 { format!("{stem}.spark") } else { format!("{stem} {i}.spark") }))
+                .find(|p| !p.exists())
+                .unwrap();
+            let move_file = |from: &Path, to: &Path| {
+                fs::rename(from, to).or_else(|_| fs::copy(from, to).and_then(|_| fs::remove_file(from)))
+            };
+            move_file(path, &dest).map_err(|e| format!("can't move {}: {e}", path.display()))?;
+            for side in ["-wal", "-shm"] {
+                let from = PathBuf::from(format!("{}{side}", path.display()));
+                if from.exists() {
+                    let _ = move_file(&from, Path::new(&format!("{}{side}", dest.display())));
+                }
+            }
+            dest
+        };
+        let mut list = self.recent();
+        list.retain(|f| f.id != id);
+        if let Ok(json) = serde_json::to_vec_pretty(&list) {
+            let _ = write_private(&self.dir.join("recent.json"), &json);
+        }
+        Ok(dest)
+    }
+
     /// A path in the files dir that doesn't exist yet: `Untitled.spark`, `Untitled 2.spark`, …
     pub fn new_file_path(&self, name: &str) -> PathBuf {
         let clean: String = name.chars().map(|c| if "/\\:*?\"<>|".contains(c) { '-' } else { c }).collect();
