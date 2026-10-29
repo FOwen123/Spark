@@ -1,0 +1,7 @@
+{
+	// VS Code MCP servers (generated test fixture)
+	"servers": {
+		"notes": { "type": "stdio", "command": "notes-mcp" },
+	},
+	"inputs": [],
+}

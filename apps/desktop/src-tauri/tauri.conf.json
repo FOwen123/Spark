@@ -1,0 +1,45 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Spark",
+  "identifier": "dev.spark.app",
+  "build": {},
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": [
+          "spark"
+        ],
+        "name": "Spark design",
+        "description": "Spark design file",
+        "role": "Editor",
+        "mimeType": "application/x-spark"
+      }
+    ],
+    "category": "DeveloperTool"
+  },
+  "plugins": {
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "spark"
+        ]
+      }
+    }
+  }
+}

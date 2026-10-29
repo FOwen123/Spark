@@ -1,0 +1,33 @@
+# Rust
+target/
+
+# JS
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Tests
+playwright-report/
+test-results/
+coverage/
+
+# Local data and secrets
+*.spark
+!fixtures/**/*.spark
+.env
+.env.*
+*.pem
+*.key
+
+# Tauri
+apps/desktop/src-tauri/gen/
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Agent scratch
+.claude/settings.local.json

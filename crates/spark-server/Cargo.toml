@@ -1,0 +1,42 @@
+[package]
+name = "spark-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+spark-core.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+base64 = "0.23"
+dirs.workspace = true
+fontdb = "0.24"
+futures-util = "0.3"
+getrandom = "0.4"
+image = "0.25"
+imagesize = "0.15"
+keyring = "4"
+krilla = "0.8"
+krilla-svg = "0.8"
+jsonc-parser = { version = "0.34", features = ["cst", "serde"] }
+open = "5"
+resvg = "0.47"
+reqwest = { version = "0.13", features = ["json"] }
+scraper = "0.29"
+rstar = "0.13"
+serde.workspace = true
+serde_json.workspace = true
+similar = "3"
+taffy = "0.15"
+toml_edit = "0.25"
+ttf-parser = "0.25"
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+tokio.workspace = true
+tower-http.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio-tungstenite = "0.30"

@@ -1,0 +1,19 @@
+[package]
+name = "spark-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+csscolorparser = "0.9"
+scraper = "0.29"
+rusqlite = { version = "0.40", features = ["bundled"] }
+base64 = "0.23"
+serde.workspace = true
+sha2 = "0.10"
+serde_json.workspace = true
+thiserror = "2"
+ulid = "3"
+
+[dev-dependencies]
+tempfile.workspace = true

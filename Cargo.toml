@@ -1,0 +1,33 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "apps/desktop/src-tauri"]
+default-members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+repository = "https://github.com/FOwen123/Spark"
+license = "MIT"
+
+[workspace.dependencies]
+spark-core = { path = "crates/spark-core" }
+spark-server = { path = "crates/spark-server" }
+anyhow = "1"
+axum = { version = "0.8", features = ["ws"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tempfile = "3"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.7", features = ["fs"] }
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# Spark's own crates run optimized in dev builds too, so tests and the e2e server reflect real speed.
+[profile.dev.package.spark-core]
+opt-level = 2
+
+[profile.dev.package.spark-server]
+opt-level = 2

@@ -1,0 +1,11 @@
+{
+  "numStartups": 12,
+  "theme": "dark",
+  "mcpServers": {
+    "notes": {
+      "type": "stdio",
+      "command": "notes-mcp",
+      "args": []
+    }
+  }
+}

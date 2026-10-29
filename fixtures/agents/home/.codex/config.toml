@@ -1,0 +1,7 @@
+# Example Codex settings (generated test fixture)
+model = "example-model"   # the default model
+approval_policy = "on-request"
+
+[mcp_servers.notes]
+command = "notes-mcp"
+args = []

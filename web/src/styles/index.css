@@ -1,0 +1,105 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/* Bundled Geist fonts under their plain family names, so designs, screenshots and exported code
+   agree. Declared in CSS (not via the FontFace API) so screenshots can embed them. */
+@font-face {
+  font-family: "Geist";
+  src: url("../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Geist";
+  src: url("../../node_modules/@fontsource-variable/geist/files/geist-latin-ext-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("../../node_modules/@fontsource-variable/geist-mono/files/geist-mono-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+/* Only Spark's grayscale tokens exist as Tailwind colors; the default hued palette is removed. */
+@theme {
+  --color-*: initial;
+  --color-bg: var(--spark-bg);
+  --color-panel: var(--spark-panel);
+  --color-canvas: var(--spark-canvas);
+  --color-line: var(--spark-line);
+  --color-hover: var(--spark-hover);
+  --color-selected: var(--spark-selected);
+  --color-selected-fg: var(--spark-selected-fg);
+  --color-fg: var(--spark-fg);
+  --color-fg-2: var(--spark-fg-2);
+  --color-fg-3: var(--spark-fg-3);
+  --color-control: var(--spark-control);
+  --color-transparent: transparent;
+  --font-sans: var(--font-ui);
+  --font-mono: var(--font-code);
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --radius-control: 6px;
+  --radius-popover: 8px;
+  --shadow-popover: var(--spark-shadow-popover);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+  }
+
+  body {
+    background: var(--spark-bg);
+    color: var(--spark-fg);
+    font-family: var(--font-ui);
+    font-size: 12px;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid currentColor;
+    outline-offset: 1px;
+  }
+
+  input,
+  textarea,
+  select,
+  button {
+    font: inherit;
+    color: inherit;
+  }
+}
+
+/* The design canvas: user content renders as real DOM inside the camera. */
+.spark-camera {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.spark-camera [data-node] {
+  box-sizing: border-box;
+}
+
+.spark-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.spark-scroll::-webkit-scrollbar-thumb {
+  background: var(--spark-line);
+  border-radius: 4px;
+}

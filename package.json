@@ -1,0 +1,26 @@
+{
+  "name": "spark",
+  "private": true,
+  "license": "MIT",
+  "packageManager": "bun@1.4.2",
+  "workspaces": [
+    "web",
+    "apps/desktop"
+  ],
+  "scripts": {
+    "dev": "bun run --cwd web dev",
+    "build": "bun run --cwd web build && cargo build -p spark-cli",
+    "verify": "bun scripts/verify.mjs",
+    "icons": "bun scripts/build-icons.mjs",
+    "e2e": "playwright test",
+    "bench": "cargo test --release -p spark-core --test bench -- --nocapture && cargo test --release -p spark-server --test mcp_perf -- --nocapture && SPARK_BENCH=1 playwright test --project bench",
+    "screenshots": "SPARK_DOCS=1 playwright test --project docs"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@playwright/test": "^1.64.1",
+    "@types/node": "^26.6.5",
+    "pdf-lib": "^1.17.1",
+    "typescript": "^7.0.2"
+  }
+}

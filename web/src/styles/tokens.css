@@ -1,0 +1,50 @@
+/* Spark's UI tokens: black, white and gray only. Every color in the chrome comes from here. */
+:root {
+  color-scheme: light;
+  --spark-bg: #ffffff;
+  --spark-panel: #ffffff;
+  --spark-canvas: #f2f2f2;
+  --spark-line: #e5e5e5;
+  --spark-hover: #f5f5f5;
+  --spark-selected: #000000;
+  --spark-selected-fg: #ffffff;
+  --spark-fg: #000000;
+  --spark-fg-2: #555555;
+  --spark-fg-3: #8a8a8a;
+  --spark-control: #f5f5f5;
+  --spark-shadow-popover: 0 4px 16px rgb(0 0 0 / 0.12);
+
+  /* Canvas HUD */
+  --hud-fg: #000000;
+  --hud-halo: #ffffff;
+
+  --font-ui: "Geist", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-code: "Geist Mono", ui-monospace, Menlo, monospace;
+  --radius-control: 6px;
+  --radius-popover: 8px;
+
+  --appbar-h: 40px;
+  --left-w: 206px;
+  --toolbar-w: 41px;
+  --right-w: 280px;
+  --inspector-header-h: 40px;
+  --row-h: 28px;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --spark-bg: #0a0a0a;
+  --spark-panel: #111111;
+  --spark-canvas: #1a1a1a;
+  --spark-line: #262626;
+  --spark-hover: #1c1c1c;
+  --spark-selected: #ffffff;
+  --spark-selected-fg: #000000;
+  --spark-fg: #ffffff;
+  --spark-fg-2: #a3a3a3;
+  --spark-fg-3: #737373;
+  --spark-control: #1c1c1c;
+  --spark-shadow-popover: 0 4px 16px rgb(0 0 0 / 0.5);
+  --hud-fg: #ffffff;
+  --hud-halo: #000000;
+}

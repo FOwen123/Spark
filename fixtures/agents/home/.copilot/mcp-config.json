@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "notes": { "type": "local", "command": "notes-mcp", "args": [], "tools": ["*"] }
+  }
+}
