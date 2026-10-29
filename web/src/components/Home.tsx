@@ -1,4 +1,4 @@
-import { Archive, FilePlus, FolderOpen, Plug } from "lucide-react";
+import { Archive, FilePlus, FolderOpen, Plug, Trash2 } from "lucide-react";
 import { ConnectDialog } from "./ConnectDialog";
 import { useEffect, useRef, useState } from "react";
 import type { Conn } from "../lib/conn";
@@ -19,7 +19,7 @@ export function Home(props: { conn: Conn; token: string; onOpen: (ref: string) =
   const [recent, setRecent] = useState<Recent[]>([]);
   const [dragging, setDragging] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [archived, setArchived] = useState<string | null>(null);
+  const [moved, setMoved] = useState<string | null>(null);
   const [connect, setConnect] = useState(false);
   const [native, setNative] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -31,14 +31,15 @@ export function Home(props: { conn: Conn; token: string; onOpen: (ref: string) =
     });
   }, [props.conn]);
 
-  async function archive(f: Recent) {
+  /** Archives a recent file, or moves it to the Trash, and drops it from the list. */
+  async function remove(f: Recent, to: "archive" | "trash") {
     setError(null);
     try {
-      const r = await props.conn.request<{ path: string }>({ t: "archive", id: f.id });
+      const r = await props.conn.request<{ path: string } | null>({ t: to, id: f.id });
       setRecent((list) => list.filter((x) => x.id !== f.id));
-      setArchived(`Moved ${f.name} to ${r.path}`);
+      setMoved(to === "trash" ? `Moved ${f.name} to the Trash` : `Moved ${f.name} to ${r?.path}`);
     } catch (e) {
-      setArchived(null);
+      setMoved(null);
       setError((e as Error).message);
     }
   }
@@ -111,7 +112,7 @@ export function Home(props: { conn: Conn; token: string; onOpen: (ref: string) =
           />
         </div>
         {(error ?? props.error) && <p className="mt-4 text-base text-fg-2">⚠ {error ?? props.error}</p>}
-        {archived && !error && <p className="mt-4 text-base text-fg-2">{archived}</p>}
+        {moved && !error && <p className="mt-4 text-base text-fg-2">{moved}</p>}
         <h2 className="mt-12 mb-2 text-sm font-medium text-fg-3 uppercase">Recent</h2>
         {recent.length === 0 ? (
           <p className="text-base text-fg-3">No files yet. Create one, or drop a .spark file here.</p>
@@ -128,10 +129,19 @@ export function Home(props: { conn: Conn; token: string; onOpen: (ref: string) =
                   type="button"
                   aria-label={`Archive ${f.name}`}
                   title="Archive: move the file to the Archive folder and off this list"
-                  onClick={() => archive(f)}
-                  className="mx-1 grid size-7 shrink-0 place-items-center rounded-control text-fg-3 opacity-0 group-hover:opacity-100 hover:bg-line hover:text-fg focus-visible:opacity-100"
+                  onClick={() => remove(f, "archive")}
+                  className="ml-1 grid size-7 shrink-0 place-items-center rounded-control text-fg-3 opacity-0 group-hover:opacity-100 hover:bg-line hover:text-fg focus-visible:opacity-100"
                 >
                   <Archive size={14} strokeWidth={1.5} />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Move ${f.name} to the Trash`}
+                  title="Delete: move the file to the Trash and off this list"
+                  onClick={() => remove(f, "trash")}
+                  className="mr-1 grid size-7 shrink-0 place-items-center rounded-control text-fg-3 opacity-0 group-hover:opacity-100 hover:bg-line hover:text-fg focus-visible:opacity-100"
+                >
+                  <Trash2 size={14} strokeWidth={1.5} />
                 </button>
               </li>
             ))}

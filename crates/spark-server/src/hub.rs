@@ -185,9 +185,21 @@ impl Hub {
         self.docs.lock().unwrap().get(id).cloned()
     }
 
-    /// Archives a file from the recent list (see `Config::archive`). Refuses while a tab has it open
-    /// or it holds edits Spark couldn't save; otherwise unloads it first so its store is closed.
+    /// Archives a file from the recent list (see `Config::archive`).
     pub fn archive(&self, id: &str) -> Result<PathBuf, String> {
+        let path = self.release(id)?;
+        self.config.archive(id, &path)
+    }
+
+    /// Moves a file from the recent list to the Trash (see `Config::trash`).
+    pub fn trash(&self, id: &str) -> Result<(), String> {
+        let path = self.release(id)?;
+        self.config.trash(id, &path)
+    }
+
+    /// Lets go of a file so it can be moved: refuses while a tab has it open or it holds edits Spark
+    /// couldn't save; otherwise unloads it so its store is closed. Returns its path.
+    fn release(&self, id: &str) -> Result<PathBuf, String> {
         let path = {
             let mut docs = self.docs.lock().unwrap();
             if let Some(d) = docs.get(id) {
@@ -214,7 +226,7 @@ impl Hub {
                 self.config.recent().into_iter().find(|f| f.id == id).ok_or("This file isn't in the recent list.")?.path
             }
         };
-        self.config.archive(id, &path)
+        Ok(path)
     }
 
     fn register(&self, store: Store, doc: Document, path: &Path) -> DocRef {
