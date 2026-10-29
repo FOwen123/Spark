@@ -27,6 +27,20 @@ pub struct RecentFile {
     pub opened_at: u64,
 }
 
+/// Renames, or copies then removes when the destination is on another volume.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    fs::rename(from, to).or_else(|_| fs::copy(from, to).and_then(|_| fs::remove_file(from)))
+}
+
+/// A `.spark` file's SQLite side files that exist, with their suffixes.
+fn side_files(path: &Path) -> Vec<(PathBuf, &'static str)> {
+    ["-wal", "-shm"]
+        .into_iter()
+        .map(|side| (PathBuf::from(format!("{}{side}", path.display())), side))
+        .filter(|(p, _)| p.exists())
+        .collect()
+}
+
 pub fn default_dir() -> PathBuf {
     std::env::var_os("SPARK_CONFIG_DIR")
         .map(PathBuf::from)
@@ -128,24 +142,47 @@ impl Config {
                 .map(|i| dir.join(if i == 1 { format!("{stem}.spark") } else { format!("{stem} {i}.spark") }))
                 .find(|p| !p.exists())
                 .unwrap();
-            let move_file = |from: &Path, to: &Path| {
-                fs::rename(from, to).or_else(|_| fs::copy(from, to).and_then(|_| fs::remove_file(from)))
-            };
             move_file(path, &dest).map_err(|e| format!("can't move {}: {e}", path.display()))?;
-            for side in ["-wal", "-shm"] {
-                let from = PathBuf::from(format!("{}{side}", path.display()));
-                if from.exists() {
-                    let _ = move_file(&from, Path::new(&format!("{}{side}", dest.display())));
-                }
+            for (from, side) in side_files(path) {
+                let _ = move_file(&from, Path::new(&format!("{}{side}", dest.display())));
             }
             dest
         };
+        self.forget(id);
+        Ok(dest)
+    }
+
+    /// Moves a file (with any SQLite side files) to the system Trash, or into `SPARK_TRASH_DIR`
+    /// when that's set (tests), and takes it off the recent list. The caller makes sure Spark
+    /// isn't holding it open.
+    pub fn trash(&self, id: &str, path: &Path) -> Result<(), String> {
+        let _edit = EDITS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut paths = vec![path.to_path_buf()];
+        paths.extend(side_files(path).into_iter().map(|(p, _)| p));
+        let failed = |e: String| format!("can't move {} to the Trash: {e}", path.display());
+        if let Some(dir) = std::env::var_os("SPARK_TRASH_DIR").map(PathBuf::from) {
+            fs::create_dir_all(&dir).map_err(|e| failed(e.to_string()))?;
+            for p in &paths {
+                move_file(p, &dir.join(p.file_name().unwrap_or_default())).map_err(|e| failed(e.to_string()))?;
+            }
+        } else {
+            #[allow(unused_mut)]
+            let mut ctx = trash::TrashContext::default();
+            // The default asks Finder over Apple events, which can prompt for a permission.
+            #[cfg(target_os = "macos")]
+            trash::macos::TrashContextExtMacos::set_delete_method(&mut ctx, trash::macos::DeleteMethod::NsFileManager);
+            ctx.delete_all(&paths).map_err(|e| failed(e.to_string()))?;
+        }
+        self.forget(id);
+        Ok(())
+    }
+
+    fn forget(&self, id: &str) {
         let mut list = self.recent();
         list.retain(|f| f.id != id);
         if let Ok(json) = serde_json::to_vec_pretty(&list) {
             let _ = write_private(&self.dir.join("recent.json"), &json);
         }
-        Ok(dest)
     }
 
     /// A path in the files dir that doesn't exist yet: `Untitled.spark`, `Untitled 2.spark`, …

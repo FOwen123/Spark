@@ -35,6 +35,8 @@ export default async function globalSetup() {
       SPARK_FILES_DIR: join(dir, "files"),
       SPARK_HOME_DIR: home,
       SPARK_DOWNLOADS_DIR: join(dir, "downloads"),
+      // Deleted files go to a throwaway folder instead of the real Trash.
+      SPARK_TRASH_DIR: join(dir, "trash"),
       SPARK_NO_OPEN: "1",
       // Provider keys go to a throwaway file instead of the real keychain.
       SPARK_KEYRING_FILE: join(dir, "keys.json"),
