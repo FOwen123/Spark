@@ -43,15 +43,19 @@ async fn fetch(url: &str) -> Result<Vec<u8>, String> {
     Ok(bytes.to_vec())
 }
 
-/// Installed font families (lowercased) and their weights and styles.
-pub fn local_fonts() -> &'static HashMap<String, Vec<Value>> {
-    static FONTS: OnceLock<HashMap<String, Vec<Value>>> = OnceLock::new();
+/// Installed fonts: families (lowercased) with their weights and styles, and the display names.
+type Installed = (HashMap<String, Vec<Value>>, Vec<String>);
+
+fn scan() -> &'static Installed {
+    static FONTS: OnceLock<Installed> = OnceLock::new();
     FONTS.get_or_init(|| {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
         let mut out: HashMap<String, Vec<Value>> = HashMap::new();
+        let mut names = std::collections::BTreeMap::new();
         for face in db.faces() {
             for (family, _) in &face.families {
+                names.entry(family.to_lowercase()).or_insert_with(|| family.clone());
                 let style = match face.style {
                     fontdb::Style::Normal => "normal",
                     fontdb::Style::Italic => "italic",
@@ -65,8 +69,14 @@ pub fn local_fonts() -> &'static HashMap<String, Vec<Value>> {
                 }
             }
         }
-        out
+        // macOS lists hidden system faces with a leading dot; they aren't meant to be picked.
+        (out, names.into_values().filter(|n| !n.starts_with('.')).collect())
     })
+}
+
+/// Installed font families (lowercased) and their weights and styles.
+pub fn local_fonts() -> &'static HashMap<String, Vec<Value>> {
+    &scan().0
 }
 
 /// The Google Fonts catalog (family, style keys like `400i`, variable axes), cached for a week.
@@ -143,6 +153,15 @@ pub async fn css(State(app): State<AppState>, Query(q): Query<HashMap<String, St
     };
     let body = if local_fonts().contains_key(&key) { None } else { google_css(&app, &key).await };
     ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], body.unwrap_or_default()).into_response()
+}
+
+/// Family names for the font picker: installed ones, and the Google Fonts catalog when reachable.
+pub async fn list(State(app): State<AppState>) -> Response {
+    let google: Vec<Value> = google_fonts(&app)
+        .await
+        .and_then(|v| v.as_array().map(|a| a.iter().map(|f| f["family"].clone()).collect()))
+        .unwrap_or_default();
+    axum::Json(json!({"installed": scan().1, "google": google})).into_response()
 }
 
 /// A font file named in a `css` response, downloaded on first use.

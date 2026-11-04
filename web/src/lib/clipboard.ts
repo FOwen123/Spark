@@ -13,6 +13,11 @@ export function topLevel(store: DocStore, ids: string[]): string[] {
   return ids.filter((id) => !store.ancestors(id).some((a) => ids.includes(a)));
 }
 
+/** Text layers among `ids` and their descendants. */
+export function textIds(store: DocStore, ids: string[]): string[] {
+  return ids.flatMap((id) => [...(store.nodes.get(id)?.kind === "text" ? [id] : []), ...textIds(store, store.kids(id))]);
+}
+
 function tree(store: DocStore, id: string): Tree | null {
   const n = store.nodes.get(id);
   if (!n) return null;

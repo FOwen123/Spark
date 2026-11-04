@@ -199,6 +199,7 @@ async fn export(
         ex::Format::parse(format).map_err(anyhow::Error::msg)?,
         ex::Scale::parse(scale).map_err(anyhow::Error::msg)?,
         String::new(),
+        90,
     )];
     let path = store.path().to_path_buf();
     let open = std::sync::Arc::new(std::sync::Mutex::new(spark_server::hub::OpenDoc {

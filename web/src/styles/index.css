@@ -103,3 +103,8 @@
   background: var(--spark-line);
   border-radius: 4px;
 }
+
+/* Settings → reduce agent animations */
+[data-reduce-motion] .animate-pulse {
+  animation: none;
+}

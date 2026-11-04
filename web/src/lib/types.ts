@@ -2,8 +2,9 @@ export type NodeKind = "frame" | "rect" | "text" | "svg" | "vector";
 
 export type Fill =
   | { type: "solid"; color: string; hidden?: boolean }
-  | { type: "linear"; angle: number; stops: { color: string; pos: number }[]; hidden?: boolean }
-  | { type: "radial"; stops: { color: string; pos: number }[]; hidden?: boolean }
+  | { type: "linear"; angle: number; stops: { color: string; pos: number }[]; space?: string; hidden?: boolean }
+  | { type: "radial"; stops: { color: string; pos: number }[]; space?: string; hidden?: boolean }
+  | { type: "conic"; angle: number; stops: { color: string; pos: number }[]; space?: string; hidden?: boolean }
   | { type: "image"; asset: string; fit?: "cover" | "contain" | "fill" | "tile"; hidden?: boolean };
 
 export type Shadow = { inset?: boolean; x: number; y: number; blur: number; spread: number; color: string; hidden?: boolean };
@@ -15,6 +16,8 @@ export type Style = {
   position?: string;
   left?: string;
   top?: string;
+  right?: string;
+  bottom?: string;
   rotate?: number;
   display?: string;
   flexDirection?: string;
@@ -32,6 +35,7 @@ export type Style = {
   shadows?: Shadow[];
   blur?: number;
   backdropBlur?: number;
+  filters?: Record<string, number>;
   fontFamily?: string;
   fontSize?: string;
   fontWeight?: number;
@@ -47,7 +51,9 @@ export type Style = {
   [k: string]: unknown;
 };
 
-export type ExportPreset = { format: string; scale: string; suffix?: string };
+export type LayoutGuide = { kind: "columns" | "rows" | "grid"; count: number; gutter: number; margin: number; size: number };
+
+export type ExportPreset = { format: string; scale: string; suffix?: string; quality?: number };
 
 export type NodeView = {
   id: string;
@@ -60,6 +66,7 @@ export type NodeView = {
   attrs?: Record<string, string>;
   style: Style;
   exports?: ExportPreset[];
+  layoutGuides?: LayoutGuide[];
   image?: { status?: string; prompt?: string; [k: string]: unknown };
   parent: string;
   key: string;

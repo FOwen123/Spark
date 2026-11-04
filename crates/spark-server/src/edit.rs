@@ -5,7 +5,7 @@ use rstar::{AABB, RTree, primitives::GeomWithData, primitives::Rectangle};
 use serde_json::{Value, json};
 use spark_core::{
     Document, Node, NodeId, NodeKind, Op, Parent, Rect,
-    style::{Len, Size},
+    style::{Len, Size, Style},
 };
 
 use crate::hub::OpenDoc;
@@ -16,6 +16,19 @@ pub fn round2(v: f64) -> f64 {
 
 fn px(v: f64) -> Value {
     json!(format!("{}px", round2(v)))
+}
+
+/// Rounds position and size ops to whole pixels (the snap-to-pixel setting).
+fn whole_px(ops: &mut [Op]) {
+    for op in ops {
+        if let Op::Set { prop, value, .. } = op
+            && matches!(prop.as_str(), "style.left" | "style.top" | "style.width" | "style.height")
+            && let Some(v) = value.as_str().and_then(|s| s.strip_suffix("px")).and_then(|s| s.parse::<f64>().ok())
+        {
+            let min = if prop.ends_with("width") || prop.ends_with("height") { 1.0 } else { f64::MIN };
+            *value = px(v.round().max(min));
+        }
+    }
 }
 
 /// World position of a parent's content origin (inside its border), from measured layout.
@@ -398,6 +411,7 @@ pub fn drag(
     dy: f64,
     point: Option<(f64, f64)>,
     snap: bool,
+    pixel: bool,
     zoom: f64,
 ) -> Result<(Value, Vec<Op>), String> {
     prune_session(open);
@@ -436,6 +450,9 @@ pub fn drag(
                 }
             }
         }
+    }
+    if pixel {
+        whole_px(&mut ops);
     }
     let ops = open.editor.transact(ops, None).map_err(|e| e.to_string())?;
     Ok((json!({"guides": guides, "dx": dx, "dy": dy}), ops))
@@ -552,7 +569,13 @@ pub fn end_drag(open: &mut OpenDoc, point: Option<(f64, f64)>, reparent: bool) -
     Ok(ops)
 }
 
-pub fn resize(open: &mut OpenDoc, target: Rect, snap: bool, zoom: f64) -> Result<(Value, Vec<Op>), String> {
+pub fn resize(
+    open: &mut OpenDoc,
+    target: Rect,
+    snap: bool,
+    pixel: bool,
+    zoom: f64,
+) -> Result<(Value, Vec<Op>), String> {
     prune_session(open);
     let Some(s) = &open.session else { return Err("no resize in progress".into()) };
     let (target, guides) =
@@ -585,29 +608,176 @@ pub fn resize(open: &mut OpenDoc, target: Rect, snap: bool, zoom: f64) -> Result
             );
         }
     }
+    if pixel {
+        whole_px(&mut ops);
+    }
     let ops = open.editor.transact(ops, None).map_err(|e| e.to_string())?;
     Ok((json!({"guides": guides}), ops))
 }
 
+/// Ops that move a freeform node by (dx, dy) through its left/top.
+fn shift(doc: &Document, id: NodeId, dx: f64, dy: f64) -> Vec<Op> {
+    let n = doc.node(id).unwrap();
+    let (ox, oy) = origin_of(doc, doc.parent(id).unwrap());
+    let m = doc.measured.get(&id).copied().unwrap_or_default();
+    let left = n.style.left.as_ref().and_then(Len::px).unwrap_or(m.x - ox);
+    let top = n.style.top.as_ref().and_then(Len::px).unwrap_or(m.y - oy);
+    let mut ops = Vec::new();
+    if dx != 0.0 {
+        ops.push(Op::Set { id, prop: "style.left".into(), value: px(left + dx) });
+    }
+    if dy != 0.0 {
+        ops.push(Op::Set { id, prop: "style.top".into(), value: px(top + dy) });
+    }
+    ops
+}
+
 pub fn nudge(open: &mut OpenDoc, ids: &[NodeId], dx: f64, dy: f64) -> Vec<Op> {
     let doc = &open.editor.doc;
+    roots(doc, ids).into_iter().filter(|id| is_free(doc, *id)).flat_map(|id| shift(doc, id, dx, dy)).collect()
+}
+
+/// Top-most, unlocked, freeform layers with their measured rects (flex children are placed by layout).
+fn free_rects(doc: &Document, ids: &[NodeId]) -> Vec<(NodeId, Rect)> {
+    roots(doc, ids)
+        .into_iter()
+        .filter(|id| is_free(doc, *id))
+        .filter_map(|id| Some((id, *doc.measured.get(&id)?)))
+        .collect()
+}
+
+/// Aligns layers to their shared bounds, or one layer to its parent. `dir` is one of
+/// left, hcenter, right, top, vmiddle, bottom.
+pub fn align(doc: &Document, ids: &[NodeId], dir: &str) -> Moves {
+    let nodes = free_rects(doc, ids);
+    let bounds = match nodes.as_slice() {
+        [] => None,
+        [(id, _)] => match doc.parent(*id) {
+            Some(Parent::Node(p)) => doc.measured.get(&p).copied(),
+            _ => None,
+        },
+        _ => union(nodes.iter().map(|(_, r)| *r)),
+    };
+    let Some(b) = bounds else { return vec![] };
+    nodes
+        .iter()
+        .map(|(id, r)| {
+            let (dx, dy) = match dir {
+                "left" => (b.x - r.x, 0.0),
+                "hcenter" => (b.x + b.w / 2.0 - (r.x + r.w / 2.0), 0.0),
+                "right" => (b.right() - r.right(), 0.0),
+                "top" => (0.0, b.y - r.y),
+                "vmiddle" => (0.0, b.y + b.h / 2.0 - (r.y + r.h / 2.0)),
+                "bottom" => (0.0, b.bottom() - r.bottom()),
+                _ => (0.0, 0.0),
+            };
+            (*id, dx, dy)
+        })
+        .collect()
+}
+
+/// Spaces three or more layers evenly between the outermost two, along one axis.
+pub fn distribute(doc: &Document, ids: &[NodeId], horizontal: bool) -> Moves {
+    let mut nodes = free_rects(doc, ids);
+    if nodes.len() < 3 {
+        return vec![];
+    }
+    let span = |r: &Rect| if horizontal { (r.x, r.w) } else { (r.y, r.h) };
+    nodes.sort_by(|a, b| span(&a.1).0.total_cmp(&span(&b.1).0));
+    let start = span(&nodes[0].1).0;
+    let end = nodes.iter().map(|(_, r)| span(r).0 + span(r).1).fold(f64::MIN, f64::max);
+    let gap = (end - start - nodes.iter().map(|(_, r)| span(r).1).sum::<f64>()) / (nodes.len() - 1) as f64;
+    let mut at = start;
+    let mut moves = Vec::new();
+    for (id, r) in &nodes {
+        let d = at - span(r).0;
+        moves.push(if horizontal { (*id, d, 0.0) } else { (*id, 0.0, d) });
+        at += span(r).1 + gap;
+    }
+    moves
+}
+
+/// Layers and how far each moves, in world units.
+pub type Moves = Vec<(NodeId, f64, f64)>;
+
+pub fn shift_ops(doc: &Document, moves: &Moves) -> Vec<Op> {
+    moves.iter().flat_map(|(id, dx, dy)| shift(doc, *id, *dx, *dy)).collect()
+}
+
+/// Moves the measured rects along too, so the next command doesn't wait for the UI to re-measure.
+pub fn carry_rects(doc: &mut Document, moves: &Moves) {
+    for (id, dx, dy) in moves {
+        for n in std::iter::once(*id).chain(doc.descendants(Parent::Node(*id))) {
+            if let Some(r) = doc.measured.get_mut(&n) {
+                r.x += dx;
+                r.y += dy;
+            }
+        }
+    }
+}
+
+/// Replaces each frame with its children in place, keeping their on-screen position.
+/// Returns the freed children.
+pub fn ungroup(doc: &Document, ids: &[NodeId]) -> (Vec<NodeId>, Vec<Op>) {
+    let (mut freed, mut ops) = (Vec::new(), Vec::new());
+    for f in roots(doc, ids) {
+        let (Some(parent), true) = (doc.parent(f), doc.node(f).is_some_and(|n| n.kind == NodeKind::Frame)) else {
+            continue;
+        };
+        let kids: Vec<NodeId> = doc.children(Parent::Node(f)).collect();
+        let sibs = doc.child_keys(parent);
+        let Some(i) = sibs.iter().position(|(_, s)| *s == f).filter(|_| !kids.is_empty()) else { continue };
+        let before = i.checked_sub(1).map(|j| sibs[j].0.as_str());
+        let keys = spark_core::fractional::keys_between(before, Some(sibs[i].0.as_str()), kids.len());
+        for (k, key) in kids.iter().zip(keys) {
+            let mut o = reparent_ops(doc, &[*k], parent, None, &[]);
+            if let Some(Op::Move { key: slot, .. }) = o.first_mut() {
+                *slot = key;
+            }
+            ops.extend(o);
+        }
+        ops.push(Op::Delete { id: f });
+        freed.extend(kids);
+    }
+    (freed, ops)
+}
+
+/// Rotates layers a quarter turn clockwise (`rotate90`) or mirrors them (`flipH`, `flipV`).
+pub fn transform(doc: &Document, ids: &[NodeId], op: &str) -> Vec<Op> {
     let mut ops = Vec::new();
-    for id in roots(doc, ids) {
-        if !is_free(doc, id) {
+    for id in ids.iter().copied().filter(|id| doc.node(*id).is_some_and(|n| !n.locked)) {
+        let s = &doc.node(id).unwrap().style;
+        if op == "rotate90" {
+            let deg = (s.rotate.unwrap_or(0.0) + 90.0).rem_euclid(360.0);
+            ops.push(Op::Set { id, prop: "style.rotate".into(), value: json!(deg) });
             continue;
         }
-        let n = doc.node(id).unwrap();
-        let parent = doc.parent(id).unwrap();
-        let (ox, oy) = origin_of(doc, parent);
-        let m = doc.measured.get(&id).copied().unwrap_or_default();
-        let left = n.style.left.as_ref().and_then(Len::px).unwrap_or(m.x - ox);
-        let top = n.style.top.as_ref().and_then(Len::px).unwrap_or(m.y - oy);
-        if dx != 0.0 {
-            ops.push(Op::Set { id, prop: "style.left".into(), value: px(left + dx) });
+        // Mirroring lives in the raw CSS `scale`, written only here as "1 1", "-1 1", "1 -1" or "-1 -1".
+        let cur = s.raw.get("scale").map(String::as_str).unwrap_or("1 1");
+        let (fx, fy) = (cur.starts_with('-') != (op == "flipH"), cur.contains(" -") != (op == "flipV"));
+        let mut raw = s.raw.clone();
+        if fx || fy {
+            raw.insert("scale".into(), format!("{} {}", if fx { -1 } else { 1 }, if fy { -1 } else { 1 }));
+        } else {
+            raw.remove("scale");
         }
-        if dy != 0.0 {
-            ops.push(Op::Set { id, prop: "style.top".into(), value: px(top + dy) });
-        }
+        ops.push(Op::Set { id, prop: "style.raw".into(), value: json!(raw) });
+    }
+    ops
+}
+
+/// Swaps the first solid fill with the border colour on layers that have both.
+pub fn swap_colors(doc: &Document, ids: &[NodeId]) -> Vec<Op> {
+    use spark_core::style::{Border, Fill};
+    let mut ops = Vec::new();
+    for id in roots(doc, ids) {
+        let s = &doc.node(id).unwrap().style;
+        let (Some(Fill::Solid { color, .. }), Some(border)) = (s.fills.first(), &s.border) else { continue };
+        let mut fills = s.fills.clone();
+        fills[0] = Fill::Solid { color: border.color.clone(), hidden: false };
+        let border = Border { color: color.clone(), ..border.clone() };
+        ops.push(Op::Set { id, prop: "style.fills".into(), value: json!(fills) });
+        ops.push(Op::Set { id, prop: "style.border".into(), value: json!(border) });
     }
     ops
 }
@@ -835,6 +1005,72 @@ pub fn spark_paste_ops(doc: &mut Document, roots: &[Value], parent: Parent) -> R
     Ok((ids, ops, rects))
 }
 
+/// The value a text style field takes after one step up (`dir` 1) or down (-1), or None when its
+/// unit can't be stepped. Steps: size 1px, weight 100, line height 0.1, letter spacing 0.01em.
+pub fn adjust_text(s: &Style, prop: &str, dir: f64) -> Option<Value> {
+    let size = match &s.font_size {
+        None => 16.0,
+        Some(l) => l.px()?,
+    };
+    let r = |v: f64, n: f64| (v * n).round() / n + 0.0;
+    match prop {
+        "fontSize" => Some(json!(format!("{}px", r((size + dir).max(1.0), 100.0)))),
+        "fontWeight" => Some(json!((i32::from(s.font_weight.unwrap_or(400)) + dir as i32 * 100).clamp(100, 900))),
+        "lineHeight" => {
+            let cur = match &s.line_height {
+                None => 1.2,
+                Some(Len::Num(v) | Len::Em(v)) => *v,
+                Some(Len::Px(p)) => p / size,
+                Some(Len::Pct(p)) => p / 100.0,
+                _ => return None,
+            };
+            Some(json!(r((cur + 0.1 * dir).max(0.1), 100.0).to_string()))
+        }
+        "letterSpacing" => {
+            let cur = match &s.letter_spacing {
+                None => 0.0,
+                Some(Len::Em(v)) => *v,
+                Some(Len::Px(p)) => p / size,
+                _ => return None,
+            };
+            Some(json!(format!("{}em", r(cur + 0.01 * dir, 1000.0))))
+        }
+        _ => None,
+    }
+}
+
+/// Insert ops that put a copy of the clipboard roots right above each target, at its position and
+/// parent, plus a delete for the target. Returns the new root ids.
+pub fn replace_ops(doc: &mut Document, roots: &[Value], targets: &[NodeId]) -> Result<(Vec<NodeId>, Vec<Op>), String> {
+    let targets: Vec<NodeId> = targets
+        .iter()
+        .copied()
+        .filter(|t| doc.node(*t).is_some() && !doc.ancestors(*t).iter().any(|a| targets.contains(a)))
+        .collect();
+    let (mut all, mut ops) = (Vec::new(), Vec::new());
+    for t in targets {
+        let parent = doc.parent(t).ok_or("the layer is not in the document")?;
+        let keys = doc.child_keys(parent);
+        let at = keys.iter().position(|(_, id)| *id == t).ok_or("the layer is not in its parent")?;
+        let (lo, hi) = (keys[at].0.clone(), keys.get(at + 1).map(|k| k.0.clone()));
+        let (ids, mut new_ops, rects) = spark_paste_ops(doc, roots, parent)?;
+        let slots = spark_core::fractional::keys_between(Some(&lo), hi.as_deref(), ids.len());
+        for op in &mut new_ops {
+            if let Op::Insert { node, key, .. } = op
+                && let Some(i) = ids.iter().position(|i| *i == node.id)
+            {
+                *key = slots[i].clone();
+            }
+        }
+        let place = Placement { parent, at: doc.measured.get(&t).map(|r| (r.x, r.y)) };
+        position_roots(doc, &mut new_ops, &ids, &place, &rects);
+        ops.extend(new_ops);
+        ops.push(Op::Delete { id: t });
+        all.extend(ids);
+    }
+    Ok((all, ops))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -876,5 +1112,23 @@ mod tests {
         let (out, _) = s.snap_resize(&from, &r(200.0, 0.0, 50.0, 98.0), 4.0);
         assert_eq!(out.h, 100.0);
         assert_eq!(out.x, 200.0);
+    }
+
+    #[test]
+    fn text_steps_by_unit_and_clamps() {
+        let mut s = Style::default();
+        assert_eq!(adjust_text(&s, "fontSize", 1.0), Some(json!("17px")));
+        assert_eq!(adjust_text(&s, "fontWeight", 1.0), Some(json!(500)));
+        assert_eq!(adjust_text(&s, "lineHeight", 1.0), Some(json!("1.3")));
+        assert_eq!(adjust_text(&s, "letterSpacing", -1.0), Some(json!("-0.01em")));
+        s.font_weight = Some(900);
+        assert_eq!(adjust_text(&s, "fontWeight", 1.0), Some(json!(900)));
+        s.font_size = Some(Len::Px(20.0));
+        s.line_height = Some(Len::Px(30.0));
+        s.letter_spacing = Some(Len::Px(1.0));
+        assert_eq!(adjust_text(&s, "lineHeight", 1.0), Some(json!("1.6")));
+        assert_eq!(adjust_text(&s, "letterSpacing", 1.0), Some(json!("0.06em")));
+        s.font_size = Some(Len::Em(1.0));
+        assert_eq!(adjust_text(&s, "fontSize", 1.0), None);
     }
 }

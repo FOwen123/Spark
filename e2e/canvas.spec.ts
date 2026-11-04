@@ -68,7 +68,9 @@ test("zoomed-out artboards keep their preview until they are tiny", async ({ pag
   await page.keyboard.press("Shift+Digit1");
   let sawPreview = false;
   for (let i = 0; i < 12; i++) {
+    const [zoom] = await camera(page);
     await page.keyboard.press("ControlOrMeta+Minus");
+    await expect.poll(async () => (await camera(page))[0]).toBeCloseTo(Math.max(0.02, zoom * 0.5), 5);
     const box = await board.boundingBox();
     if (!box) throw new Error("no artboard");
     const size = Math.max(box.width, box.height);
@@ -76,7 +78,7 @@ test("zoomed-out artboards keep their preview until they are tiny", async ({ pag
     if (size >= 40) {
       await expect(board).not.toHaveAttribute("data-shell", "");
       sawPreview ||= size < 160;
-    } else if (size < 28) {
+    } else if (size < 32) {
       await expect(board).toHaveAttribute("data-shell", "");
       break;
     }

@@ -100,3 +100,68 @@ export function resizeRect(start: Rect, h: Handle, dx: number, dy: number, keepR
   }
   return { x, y, w, h: hgt };
 }
+
+export type Measure = { x1: number; y1: number; x2: number; y2: number; value: number; dashed?: boolean };
+
+/** Stretches along one axis between the edges of [a1, a2] and [b1, b2]: the gap, or the insets when one contains the other. */
+function gaps(a1: number, a2: number, b1: number, b2: number): [number, number][] {
+  if (a2 <= b1) return [[a2, b1]];
+  if (b2 <= a1) return [[b2, a1]];
+  if (b1 <= a1 && a2 <= b2) return [[b1, a1], [a2, b2]];
+  if (a1 <= b1 && b2 <= a2) return [[a1, b1], [b2, a2]];
+  return [];
+}
+
+const overlapMid = (a1: number, a2: number, b1: number, b2: number) => {
+  const lo = Math.max(a1, b1);
+  const hi = Math.min(a2, b2);
+  return hi > lo ? (lo + hi) / 2 : null;
+};
+
+/**
+ * Distance lines between rects `a` and `b` (world space), the way design tools show them with Alt held:
+ * a line across each gap, at the middle of the overlap on the other axis. When the rects don't overlap
+ * on that axis a dashed line reaches over to `b`.
+ */
+export function measureLines(a: Rect, b: Rect): Measure[] {
+  const out: Measure[] = [];
+  const ymid = overlapMid(a.y, a.y + a.h, b.y, b.y + b.h);
+  const xmid = overlapMid(a.x, a.x + a.w, b.x, b.x + b.w);
+  for (const [s, e] of gaps(a.x, a.x + a.w, b.x, b.x + b.w)) {
+    if (e - s < 0.01) continue;
+    const y = ymid ?? a.y + a.h / 2;
+    out.push({ x1: s, y1: y, x2: e, y2: y, value: e - s });
+    if (ymid === null) {
+      const x = a.x + a.w <= b.x ? e : s;
+      out.push({ x1: x, y1: y, x2: x, y2: y < b.y ? b.y : b.y + b.h, value: 0, dashed: true });
+    }
+  }
+  for (const [s, e] of gaps(a.y, a.y + a.h, b.y, b.y + b.h)) {
+    if (e - s < 0.01) continue;
+    const x = xmid ?? a.x + a.w / 2;
+    out.push({ x1: x, y1: s, x2: x, y2: e, value: e - s });
+    if (xmid === null) {
+      const y = a.y + a.h <= b.y ? e : s;
+      out.push({ x1: x, y1: y, x2: x < b.x ? b.x : b.x + b.w, y2: y, value: 0, dashed: true });
+    }
+  }
+  return out;
+}
+
+/** The angle in degrees of the vector from `c` to `p`, 0 pointing right and growing clockwise (screen space). */
+export const angleDeg = (c: { x: number; y: number }, p: { x: number; y: number }) => (Math.atan2(p.y - c.y, p.x - c.x) * 180) / Math.PI;
+
+/** An angle folded into (-180, 180], optionally rounded to a multiple of `step`. */
+export function normalizeAngle(a: number, step = 0): number {
+  const v = step ? Math.round(a / step) * step : a;
+  const m = ((((v + 180) % 360) + 360) % 360) - 180;
+  return m === -180 ? 180 : m;
+}
+
+/** Where `p` sits in the frame of a rect centred on `c` and turned by `deg`: (0, 0) is the centre, x runs along its width. */
+export function toLocal(c: { x: number; y: number }, deg: number, p: { x: number; y: number }) {
+  const r = (-deg * Math.PI) / 180;
+  const dx = p.x - c.x;
+  const dy = p.y - c.y;
+  return { x: dx * Math.cos(r) - dy * Math.sin(r), y: dx * Math.sin(r) + dy * Math.cos(r) };
+}

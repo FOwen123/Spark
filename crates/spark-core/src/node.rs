@@ -54,6 +54,53 @@ pub struct ExportPreset {
     pub scale: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suffix: Option<String>,
+    /// JPEG quality, 1..=100 (default 90).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quality: Option<u8>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GuideKind {
+    Columns,
+    Rows,
+    /// Square cells of `size` px.
+    Grid,
+}
+
+/// A layout guide drawn over a frame on the canvas (never rendered into exports).
+#[derive(Clone, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LayoutGuide {
+    pub kind: GuideKind,
+    /// Number of columns or rows (columns and rows guides).
+    #[serde(default)]
+    pub count: u32,
+    /// Space between columns or rows.
+    #[serde(default)]
+    pub gutter: f64,
+    /// Space between the frame's edge and the first and last column or row.
+    #[serde(default)]
+    pub margin: f64,
+    /// Cell size (grid guides).
+    #[serde(default)]
+    pub size: f64,
+}
+
+impl LayoutGuide {
+    /// Guides need a positive count (columns, rows) or size (grid) and non-negative spacing.
+    pub fn check(&self) -> Result<(), String> {
+        let ok = |v: f64| v.is_finite() && (0.0..=100_000.0).contains(&v);
+        let shape = match self.kind {
+            GuideKind::Grid => ok(self.size) && self.size >= 1.0,
+            _ => (1..=500).contains(&self.count),
+        };
+        if shape && ok(self.gutter) && ok(self.margin) {
+            Ok(())
+        } else {
+            Err("a layout guide needs a count of 1-500 (columns, rows) or a size of at least 1 (grid), and spacing of 0 or more".into())
+        }
+    }
 }
 
 fn is_false(b: &bool) -> bool {
@@ -83,6 +130,9 @@ pub struct Node {
     pub style: Style,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exports: Vec<ExportPreset>,
+    /// Column, row and grid guides drawn over a frame.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub layout_guides: Vec<LayoutGuide>,
     /// Image request or generation state (see the Images section of the spec).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<serde_json::Value>,
@@ -104,6 +154,7 @@ impl Node {
             attrs: BTreeMap::new(),
             style: Style::default(),
             exports: Vec::new(),
+            layout_guides: Vec::new(),
             image: None,
             deleted: false,
         }

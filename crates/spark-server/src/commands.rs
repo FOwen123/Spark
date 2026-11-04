@@ -5,9 +5,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use spark_core::{
     Node, NodeId, NodeKind, Op, PageId, Parent,
+    color::Color,
     css::{apply_decl, remove_decl},
     node::Page,
-    style::{Fill, Len, Size},
+    style::{Fill, Len, Size, Style},
     tokens::Token,
 };
 
@@ -68,8 +69,12 @@ pub fn style_ops(
             other => ignored.push(format!("`{prop}`: value must be a string or number, got {other}")),
         }
     }
-    let before = serde_json::to_value(&node.style).unwrap();
-    let after = serde_json::to_value(&style).unwrap();
+    Ok(style_diff(id, &node.style, &style))
+}
+
+/// One `Set` op per style field that differs between `before` and `after`.
+fn style_diff(id: NodeId, before: &Style, after: &Style) -> Vec<Op> {
+    let (before, after) = (serde_json::to_value(before).unwrap(), serde_json::to_value(after).unwrap());
     let mut ops = Vec::new();
     for field in spark_core::style::STYLE_FIELDS {
         let (b, a) = (before.get(*field).unwrap_or(&Value::Null), after.get(*field).unwrap_or(&Value::Null));
@@ -77,7 +82,28 @@ pub fn style_ops(
             ops.push(Op::Set { id, prop: format!("style.{field}"), value: a.clone() });
         }
     }
-    Ok(ops)
+    ops
+}
+
+/// Swaps every use of color `from` for `to` in a style: fills, gradient stops, border, shadows, text.
+fn replace_color(style: &mut Style, from: &Color, to: &Color) {
+    let swap = |c: &mut Color| {
+        if c == from {
+            *c = to.clone();
+        }
+    };
+    for f in &mut style.fills {
+        match f {
+            Fill::Solid { color, .. } => swap(color),
+            Fill::Linear { stops, .. } | Fill::Radial { stops, .. } | Fill::Conic { stops, .. } => {
+                stops.iter_mut().for_each(|s| swap(&mut s.color))
+            }
+            Fill::Image { .. } => {}
+        }
+    }
+    style.border.iter_mut().for_each(|b| swap(&mut b.color));
+    style.shadows.iter_mut().for_each(|s| swap(&mut s.color));
+    style.color.iter_mut().for_each(swap);
 }
 
 #[derive(Deserialize)]
@@ -221,6 +247,26 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
             }
             Ok((json!(null), tx(open, ops)?))
         }
+        "replaceColor" => {
+            #[derive(Deserialize)]
+            struct C {
+                ids: Vec<String>,
+                from: Color,
+                to: Color,
+            }
+            let c: C = parse(cmd)?;
+            let doc = &open.editor.doc;
+            let mut ops = Vec::new();
+            for id in ids(&c.ids)? {
+                for n in std::iter::once(id).chain(doc.descendants(Parent::Node(id))) {
+                    let Some(node) = doc.node(n) else { continue };
+                    let mut style = node.style.clone();
+                    replace_color(&mut style, &c.from, &c.to);
+                    ops.extend(style_diff(n, &node.style, &style));
+                }
+            }
+            Ok((json!(null), tx(open, ops)?))
+        }
         "delete" => {
             #[derive(Deserialize)]
             struct C {
@@ -259,6 +305,7 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
                 cmd["dy"].as_f64().unwrap_or(0.0),
                 point,
                 cmd["snap"].as_bool().unwrap_or(true),
+                cmd["pixel"].as_bool().unwrap_or(false),
                 cmd["zoom"].as_f64().unwrap_or(1.0),
             )
         }
@@ -274,7 +321,13 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
         }
         "resize" => {
             let rect: spark_core::Rect = parse(&cmd["rect"])?;
-            edit::resize(open, rect, cmd["snap"].as_bool().unwrap_or(true), cmd["zoom"].as_f64().unwrap_or(1.0))
+            edit::resize(
+                open,
+                rect,
+                cmd["snap"].as_bool().unwrap_or(true),
+                cmd["pixel"].as_bool().unwrap_or(false),
+                cmd["zoom"].as_f64().unwrap_or(1.0),
+            )
         }
         "resizeEnd" => {
             open.session = None;
@@ -292,6 +345,34 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
             let ops = tx(open, ops)?;
             open.editor.selection = new_ids.clone();
             Ok((json!({"ids": new_ids}), ops))
+        }
+        "align" | "distribute" => {
+            let list = ids(&parse::<Vec<String>>(&cmd["ids"])?)?;
+            let arg = cmd["dir"].as_str().unwrap_or_default();
+            let doc = &open.editor.doc;
+            let moves =
+                if kind == "align" { edit::align(doc, &list, arg) } else { edit::distribute(doc, &list, arg == "x") };
+            let ops = tx(open, edit::shift_ops(doc, &moves))?;
+            edit::carry_rects(&mut open.editor.doc, &moves);
+            Ok((json!(null), ops))
+        }
+        "transform" | "swapColors" => {
+            let list = ids(&parse::<Vec<String>>(&cmd["ids"])?)?;
+            let doc = &open.editor.doc;
+            let ops = match cmd["dir"].as_str() {
+                Some(op) if kind == "transform" => edit::transform(doc, &list, op),
+                _ => edit::swap_colors(doc, &list),
+            };
+            Ok((json!(null), tx(open, ops)?))
+        }
+        "ungroup" => {
+            let list = ids(&parse::<Vec<String>>(&cmd["ids"])?)?;
+            let (freed, ops) = edit::ungroup(&open.editor.doc, &list);
+            let ops = tx(open, ops)?;
+            if !freed.is_empty() {
+                open.editor.selection = freed.clone();
+            }
+            Ok((json!({"ids": freed}), ops))
         }
         "wrap" => {
             let list = ids(&parse::<Vec<String>>(&cmd["ids"])?)?;
@@ -359,6 +440,13 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
         }
         "code" => {
             let list = ids(&parse::<Vec<String>>(&cmd["ids"])?)?;
+            if cmd["format"] == "svg" {
+                let svgs = list
+                    .iter()
+                    .map(|id| crate::export::node_svg(&open.editor.doc, *id))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return Ok((json!(svgs.join("\n")), vec![]));
+            }
             let format = match cmd["format"].as_str().unwrap_or("html") {
                 "jsx" => Format::Jsx,
                 "tailwind" => Format::Tailwind,
@@ -371,6 +459,14 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
                 asset_url: &|h| format!("/assets/{h}"),
             };
             Ok((json!(codegen::code(&open.editor.doc, &list, &opts)), vec![]))
+        }
+        "pasteSpark" if cmd["replace"].is_array() => {
+            let roots = cmd["roots"].as_array().cloned().ok_or("roots required")?;
+            let targets = ids(&parse::<Vec<String>>(&cmd["replace"])?)?;
+            let (new_ids, ops) = edit::replace_ops(&mut open.editor.doc, &roots, &targets)?;
+            let ops = tx(open, ops)?;
+            open.editor.selection = new_ids.clone();
+            Ok((json!({"ids": new_ids}), ops))
         }
         "pasteSpark" => {
             let parent: Parent = parse(&cmd["parent"])?;
@@ -398,6 +494,50 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
             open.editor.selection = vec![id];
             Ok((json!({"ids": [id]}), ops))
         }
+        "pasteStyle" => {
+            // Appearance fields go to every target; type fields only to text layers, and only when
+            // the copied layer was text. Fields the copied style lacks are cleared.
+            const LOOK: [&str; 8] =
+                ["fills", "border", "radius", "shadows", "opacity", "blend", "blur", "backdropBlur"];
+            const TYPE: [&str; 8] = [
+                "fontFamily",
+                "fontSize",
+                "fontWeight",
+                "fontStyle",
+                "lineHeight",
+                "letterSpacing",
+                "textAlign",
+                "color",
+            ];
+            let list = ids(&parse::<Vec<String>>(&cmd["ids"])?)?;
+            let style = cmd["style"].as_object().ok_or("style required")?;
+            let with_type = cmd["text"] == true;
+            let mut ops = Vec::new();
+            for id in list {
+                let Some(n) = open.editor.doc.node(id) else { continue };
+                let typed = if with_type && n.kind == NodeKind::Text { &TYPE[..] } else { &[] };
+                for f in LOOK.iter().chain(typed) {
+                    let value = style.get(*f).cloned().unwrap_or(Value::Null);
+                    if n.style.get_field(f) != value {
+                        ops.push(Op::Set { id, prop: format!("style.{f}"), value });
+                    }
+                }
+            }
+            Ok((json!(null), tx(open, ops)?))
+        }
+        "adjustText" => {
+            let list = ids(&parse::<Vec<String>>(&cmd["ids"])?)?;
+            let prop = cmd["prop"].as_str().unwrap_or_default();
+            let dir = cmd["dir"].as_f64().unwrap_or(0.0).signum();
+            let ops: Vec<Op> = list
+                .into_iter()
+                .filter_map(|id| {
+                    let n = open.editor.doc.node(id).filter(|n| n.kind == NodeKind::Text)?;
+                    Some(Op::Set { id, prop: format!("style.{prop}"), value: edit::adjust_text(&n.style, prop, dir)? })
+                })
+                .collect();
+            Ok((json!(null), tx(open, ops)?))
+        }
         "renameFile" => {
             let name = cmd["name"].as_str().unwrap_or_default().to_string();
             Ok((json!(null), tx(open, vec![Op::SetFileName { name }])?))
@@ -419,6 +559,21 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
                 open.editor.page = Some(id);
             }
             Ok((json!({"id": id}), ops))
+        }
+        "duplicatePage" => {
+            let id: PageId = parse(&cmd["id"])?;
+            let doc = &mut open.editor.doc;
+            let src = doc.page(id).filter(|p| !p.divider).cloned().ok_or("page not found")?;
+            let index = doc.pages.iter().position(|p| p.id == id).unwrap() + 1;
+            let new_id = doc.alloc_page();
+            let page = Page { id: new_id, name: format!("{} copy", src.name), ..src };
+            let mut ops = vec![Op::InsertPage { page, index }];
+            for (key, board) in doc.child_keys(Parent::Page(id)).to_vec() {
+                ops.extend(edit::clone_ops(doc, board, Parent::Page(new_id), key).1);
+            }
+            let ops = tx(open, ops)?;
+            open.editor.page = Some(new_id);
+            Ok((json!({"id": new_id}), ops))
         }
         "setPage" => {
             let id: PageId = parse(&cmd["id"])?;

@@ -60,8 +60,10 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &PredefinedMenuItem::cut(app, None)?,
             &PredefinedMenuItem::copy(app, None)?,
             &PredefinedMenuItem::paste(app, None)?,
+            &item("pasteOnTop", "Paste on Top", None)?,
             &item("duplicate", "Duplicate", Some("CmdOrCtrl+D"))?,
             &PredefinedMenuItem::select_all(app, None)?,
+            &item("selectOthers", "Select Others", None)?,
         ],
     )?;
     let view = Submenu::with_items(
@@ -75,6 +77,12 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
             &item("zoomFit", "Zoom to Fit", None)?,
             &PredefinedMenuItem::separator(app)?,
             &item("panel.agent", "Agent Panel", Some("CmdOrCtrl+J"))?,
+            &item("toggleUI", "Show/Hide UI", None)?,
+            &PredefinedMenuItem::separator(app)?,
+            // No accelerators on the tab items: the page binds Ctrl+Tab and Ctrl+Shift+Tab itself.
+            &item("tab.next", "Next Tab", None)?,
+            &item("tab.prev", "Previous Tab", None)?,
+            &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, None)?,
         ],
     )?;
@@ -84,6 +92,15 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         true,
         &[&PredefinedMenuItem::minimize(app, None)?, &PredefinedMenuItem::maximize(app, None)?],
     )?;
+    let help = Submenu::with_id_and_items(
+        app,
+        tauri::menu::HELP_SUBMENU_ID,
+        "Help",
+        true,
+        &[&item("app.shortcuts", "Keyboard Shortcuts", None)?],
+    )?;
+    #[cfg(target_os = "macos")]
+    help.set_as_help_menu_for_nsapp()?;
     let mut menus: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = Vec::new();
     #[cfg(target_os = "macos")]
     let app_menu = Submenu::with_items(
@@ -107,7 +124,7 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     menus.push(&app_menu);
     #[cfg(not(target_os = "macos"))]
     let _ = AboutMetadata::default();
-    menus.extend([&file as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &edit, &view, &window]);
+    menus.extend([&file as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &edit, &view, &window, &help]);
     Menu::with_items(app, &menus)
 }
 
@@ -203,7 +220,40 @@ fn main() {
 
             // The UI learns it's in the desktop app (native menus own some shortcuts) from `?desktop`.
             let url = format!("http://127.0.0.1:{port}/?desktop=1#token={token}").parse()?;
+            let handle = app.handle().clone();
             let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+                .on_new_window(move |url, features| {
+                    use tauri::webview::NewWindowResponse;
+                    if url.scheme() != "http"
+                        || url.host_str() != Some("127.0.0.1")
+                        || url.port() != Some(port)
+                        || !url.path().starts_with("/assets/")
+                    {
+                        return NewWindowResponse::Deny;
+                    }
+                    let label = format!("image-{}", url.path().trim_start_matches("/assets/"));
+                    if let Some(window) = handle.get_webview_window(&label) {
+                        let _ = window.set_focus();
+                        return NewWindowResponse::Deny;
+                    }
+                    match WebviewWindowBuilder::new(
+                        &handle,
+                        label,
+                        WebviewUrl::External("about:blank".parse().unwrap()),
+                    )
+                    .window_features(features)
+                    .title("Spark image")
+                    .build()
+                    {
+                        Ok(window) => NewWindowResponse::Create { window },
+                        Err(e) => {
+                            eprintln!("spark: could not open image: {e}");
+                            NewWindowResponse::Deny
+                        }
+                    }
+                })
+                // Tabs, layers and file imports use the frontend HTML drag and drop handlers.
+                .disable_drag_drop_handler()
                 .title("Spark")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(900.0, 600.0)

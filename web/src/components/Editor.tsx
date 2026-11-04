@@ -1,15 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { copyPayload, readSparkClip, topLevel } from "../lib/clipboard";
+import { copyPayload, readSparkClip, textIds, topLevel } from "../lib/clipboard";
 import { type DocStore, useDoc } from "../lib/doc";
 import type { Camera } from "../lib/geometry";
 import { commandFor } from "../lib/keymap";
-import type { Agent, Rect } from "../lib/types";
+import { prefs, setPrefs, usePrefs } from "../lib/prefs";
+import { renderToPng } from "../lib/render";
+import { selectionFor } from "../lib/selection";
+import { COMMAND_TOASTS, showToast } from "../lib/toast";
+import type { Agent, Rect, Style } from "../lib/types";
+import { Toast } from "./Toast";
 import { Canvas, type CanvasApi } from "./Canvas";
 import { AgentPanel, type ToolCall } from "./AgentPanel";
 import { CanvasMenu } from "./CanvasMenu";
 import { CodeDialog } from "./CodeDialog";
 import { Inspector } from "./Inspector";
-import { LeftPanel } from "./LeftPanel";
+import { LeftPanel, SidebarButton } from "./LeftPanel";
 import { type Tool, Toolbar } from "./Toolbar";
 
 function typing(t: EventTarget | null) {
@@ -22,6 +27,9 @@ type ClipData = { html: string; text: string; files: File[] };
 export function Editor({ store, agents, calls }: { store: DocStore; agents: Agent[]; calls: ToolCall[] }) {
   useDoc(store);
   const [agentPanel, setAgentPanel] = useState(false);
+  // Hides every panel and the toolbar (not remembered across reloads); `floating` and `leftHidden` are in prefs.
+  const [uiHidden, setUiHidden] = useState(false);
+  const p = usePrefs();
   // Artboards agents are working on in this file, for the falling-dot indicator.
   const agentBoards = new Map<string, number>();
   for (const a of agents) for (const b of a.files[store.file.id] ?? []) agentBoards.set(b, 0);
@@ -30,6 +38,8 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
   const [toast, setToast] = useState<string | null>(null);
   const lastClip = useRef<{ html: string; plain: string } | null>(null);
   const menuPoint = useRef<{ x: number; y: number } | null>(null);
+  const [under, setUnder] = useState<string[]>([]);
+  const styleClip = useRef<{ style: Style; text: boolean } | null>(null);
   const pickImage = useRef<((hash: string) => void) | null>(null);
   const [cam, setCam] = useState<Camera>({ x: 0, y: 0, zoom: 1 });
   const [spaceDown, setSpaceDown] = useState(false);
@@ -82,15 +92,24 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
   );
 
   const paste = useCallback(
-    async (data: ClipData, at?: { x: number; y: number }) => {
-      const parent = pasteTarget();
+    async (data: ClipData, at?: { x: number; y: number }, mode?: "top" | "replace") => {
+      const sel = store.selection;
+      if (mode === "replace" && !readSparkClip(data.html)) return setToast("Copy layers first, then paste to replace");
+      // Paste on top: same place the layers were copied from, next to the selection.
+      const parent = mode === "top" && sel.length ? (store.nodes.get(sel[0])?.parent ?? store.page) : pasteTarget();
       const pos = at ?? (parent === store.page ? api.current?.center() : (() => {
         const r = store.rects.get(parent);
         return r ? { x: r.x + 16, y: r.y + 16 } : undefined;
       })());
       const spark = readSparkClip(data.html);
       if (spark) {
-        const r = await store.do<{ ids: string[] }>({ type: "pasteSpark", parent, roots: spark.roots, from: spark.from, ...(at ?? {}) });
+        if (mode === "replace") {
+          const r = await store.do<{ ids: string[] }>({ type: "pasteSpark", roots: spark.roots, replace: topLevel(store, sel) });
+          return store.select(r.ids);
+        }
+        const rects = spark.roots.flatMap((t) => (t.rect ? [t.rect] : []));
+        const origin = mode === "top" && rects.length ? { x: Math.min(...rects.map((r) => r.x)), y: Math.min(...rects.map((r) => r.y)) } : undefined;
+        const r = await store.do<{ ids: string[] }>({ type: "pasteSpark", parent, roots: spark.roots, from: spark.from, ...(origin ?? at ?? {}) });
         return store.select(r.ids);
       }
       const image = data.files.find((f) => f.type.startsWith("image/"));
@@ -128,27 +147,49 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
     [store],
   );
 
+  const readClipboard = useCallback(async (): Promise<ClipData | null> => {
+    try {
+      const items = await navigator.clipboard.read();
+      const data: ClipData = { html: "", text: "", files: [] };
+      for (const it of items) {
+        for (const type of it.types) {
+          const blob = await it.getType(type);
+          if (type === "text/html") data.html = await blob.text();
+          else if (type === "text/plain") data.text = await blob.text();
+          else if (type.startsWith("image/")) data.files.push(new File([blob], "Pasted image", { type }));
+        }
+      }
+      return data;
+    } catch {
+      return lastClip.current ? { html: lastClip.current.html, text: lastClip.current.plain, files: [] } : null;
+    }
+  }, []);
+
   const pasteFromMenu = useCallback(
     async (here: boolean) => {
-      const at = here && menuPoint.current ? menuPoint.current : undefined;
-      try {
-        const items = await navigator.clipboard.read();
-        const data: ClipData = { html: "", text: "", files: [] };
-        for (const it of items) {
-          for (const type of it.types) {
-            const blob = await it.getType(type);
-            if (type === "text/html") data.html = await blob.text();
-            else if (type === "text/plain") data.text = await blob.text();
-            else if (type.startsWith("image/")) data.files.push(new File([blob], "Pasted image", { type }));
-          }
-        }
-        return paste(data, at);
-      } catch {
-        if (lastClip.current) return paste({ html: lastClip.current.html, text: lastClip.current.plain, files: [] }, at);
-      }
+      const data = await readClipboard();
+      if (data) return paste(data, here && menuPoint.current ? menuPoint.current : undefined);
     },
-    [paste],
+    [paste, readClipboard],
   );
+
+  const pasteWith = useCallback(
+    async (mode: "top" | "replace") => {
+      const data = await readClipboard();
+      if (data) return paste(data, undefined, mode);
+    },
+    [paste, readClipboard],
+  );
+
+  /** Puts a blob (possibly still being made) on the system clipboard, then says so. */
+  const writeClip = useCallback(async (type: string, blob: Promise<Blob>, label: string) => {
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ [type]: blob })]);
+      setToast(`Copied ${label}`);
+    } catch (e) {
+      setToast(`Couldn't copy ${label}: ${(e as Error).message}`);
+    }
+  }, []);
 
   const showCode = useCallback(
     async (format: "html" | "jsx" | "tailwind") => {
@@ -220,6 +261,7 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
 
   const run = useCallback(
     (cmd: string) => {
+      if (COMMAND_TOASTS[cmd]) showToast(COMMAND_TOASTS[cmd]);
       const sel = store.selection;
       const rectsOf = (ids: string[]) => api.current?.rectOf(ids) ?? null;
       const nudge = (dx: number, dy: number) => sel.length && store.do({ type: "nudge", ids: sel, dx, dy, merge: "nudge" });
@@ -245,6 +287,33 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
           const parents = [...new Set(sel.map((id) => store.nodes.get(id)?.parent).filter((p): p is string => !!p && !p.startsWith("p-")))];
           return store.select(parents.length ? parents : name === "escape" ? [] : sel);
         }
+        case "selectNext":
+        case "selectPrev":
+        case "selectOthers":
+        case "boardNext":
+        case "boardPrev": {
+          const ids = selectionFor(store, name);
+          if (!ids) return;
+          store.select(ids);
+          return name.startsWith("board") ? api.current?.zoomTo(rectsOf(ids)) : undefined;
+        }
+        case "align":
+        case "distribute":
+        case "transform":
+          return sel.length && store.do({ type: name, ids: sel, dir: arg });
+        case "swapColors":
+        case "ungroup":
+          return sel.length && store.do({ type: name, ids: sel });
+        case "toggleClip": {
+          const frames = sel.filter((id) => store.nodes.get(id)?.kind === "frame");
+          const on = frames.every((id) => ["clip", "hidden"].includes(store.nodes.get(id)?.style.overflow ?? ""));
+          return frames.length && store.do({ type: "setStyle", ids: frames, styles: { overflow: on ? null : "clip" } });
+        }
+        case "page": {
+          const pages = store.pages.filter((p) => !p.divider);
+          const next = pages[pages.findIndex((p) => p.id === store.page) + (arg === "next" ? 1 : -1)];
+          return next && store.setPage(next.id);
+        }
         case "zoomFit":
           return api.current?.zoomTo(rectsOf(store.kids(store.page)));
         case "zoomSelection":
@@ -257,7 +326,7 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
           return api.current?.zoomBy(0.5);
         case "nudge":
         case "nudgeBig": {
-          const k = name === "nudgeBig" ? 8 : 1;
+          const k = name === "nudgeBig" ? prefs().nudgeLarge : prefs().nudgeSmall;
           const dirs: Record<string, [number, number]> = { up: [0, -k], down: [0, k], left: [-k, 0], right: [k, 0] };
           if (!sel.length) {
             const [dx, dy] = dirs[arg];
@@ -284,8 +353,43 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
           return sel.length === 1 && window.dispatchEvent(new CustomEvent("spark:rename", { detail: sel[0] }));
         case "export":
           return sel.length && exportNodes(sel, sel.length === 1 ? (store.nodes.get(sel[0])?.exports ?? []) : []);
+        case "copyStyle": {
+          const n = store.nodes.get(sel[0]);
+          if (!n || sel.length !== 1) return;
+          styleClip.current = { style: n.style, text: n.kind === "text" };
+          return setToast("Copied styles");
+        }
+        case "pasteStyle":
+          if (!styleClip.current) return setToast("Copy styles first");
+          return sel.length && store.do({ type: "pasteStyle", ids: sel, ...styleClip.current });
+        case "pasteOnTop":
+          return pasteWith("top");
+        case "pasteReplace":
+          return sel.length && pasteWith("replace");
+        case "copyPng":
+          return sel.length && writeClip("image/png", renderToPng(store, sel[0], 2).then((b) => fetch(`data:image/png;base64,${b}`).then((r) => r.blob())), "PNG");
+        case "copySvg":
+          return sel.length && writeClip("text/plain", store.do<string>({ type: "code", ids: topLevel(store, sel), format: "svg" }).then((t) => new Blob([t], { type: "text/plain" })), "SVG");
+        case "copyLink":
+          return sel.length && navigator.clipboard.writeText(`spark://file/${store.file.id}/${store.page}?node=${sel[0]}`).then(() => setToast("Copied link"));
+        case "adjustText": {
+          const [prop, dir] = arg.split(":");
+          return store.do({ type: "adjustText", ids: textIds(store, sel), prop, dir: Number(dir) });
+        }
         case "panel":
           return setAgentPanel((v) => !v);
+        case "toggleUI":
+          return setUiHidden((v) => !v);
+        case "toggleFloating":
+          return setPrefs({ floating: !prefs().floating });
+        case "togglePixelGrid":
+        case "toggleSnapPixel":
+        case "toggleLayoutGuides": {
+          // The menu shows these from prefs; features read them there. The event lets them react to a flip.
+          const key = { togglePixelGrid: "pixelGrid", toggleSnapPixel: "snapPixel", toggleLayoutGuides: "layoutGuides" }[name] as "pixelGrid" | "snapPixel" | "layoutGuides";
+          setPrefs({ [key]: !prefs()[key] });
+          return window.dispatchEvent(new CustomEvent("spark:command", { detail: cmd }));
+        }
         case "copyJsx":
           return showCode("jsx");
         case "copyTailwind":
@@ -294,7 +398,7 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
           window.dispatchEvent(new CustomEvent("spark:command", { detail: cmd }));
       }
     },
-    [store, chooseTool, showCode, exportNodes],
+    [store, chooseTool, showCode, exportNodes, pasteWith, writeClip],
   );
 
   // Native menu commands (desktop app).
@@ -320,6 +424,8 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
       }
       const cmd = commandFor(e);
       if (!cmd) return;
+      // Tab keeps moving focus inside a focused control or menu; it selects only from the canvas and layers.
+      if (e.key === "Tab" && (e.target as HTMLElement).closest?.("button, a, input, [role^=menu]")) return;
       e.preventDefault();
       run(cmd);
     };
@@ -334,24 +440,12 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
     };
   }, [run]);
 
-  return (
-    <div className="flex min-h-0 flex-1">
-      <LeftPanel store={store} />
-      <Toolbar tool={tool} onTool={chooseTool} />
-      <CanvasMenu store={store} run={run} onPaste={pasteFromMenu} onCopy={(cut) => copy(cut)} onCode={showCode}>
-        {/* biome-ignore lint/a11y/noStaticElementInteractions: records where the context menu opened */}
-        <div
-          className="flex min-w-0 flex-1"
-          onContextMenu={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            menuPoint.current = api.current?.toWorld(e.clientX - r.left, e.clientY - r.top) ?? null;
-          }}
-        >
-          <Canvas store={store} tool={tool} setTool={setTool} cam={cam} setCam={setCam} spaceDown={spaceDown} apiRef={api} onImageTool={() => imageInput.current?.click()} agentBoards={agentBoards} />
-        </div>
-      </CanvasMenu>
-      {agentPanel && <AgentPanel store={store} agents={agents} calls={calls} onClose={() => setAgentPanel(false)} />}
-      <Inspector
+  // In floating mode the toolbar and panels sit over the canvas as rounded cards instead of docking.
+  const card = "absolute z-30 flex overflow-hidden rounded-popover border border-line shadow-popover [&>aside]:border-0 [&>nav]:border-0";
+  const menu = { store, run, onPaste: pasteFromMenu, onCopy: (cut: boolean) => copy(cut), onCode: showCode };
+  const left = p.leftHidden ? null : <LeftPanel store={store} menu={menu} agents={agents} run={run} />;
+  const inspector = (
+    <Inspector
         store={store}
         cam={cam}
         run={run}
@@ -363,6 +457,29 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
           requestAnimationFrame(() => requestAnimationFrame(() => api.current?.zoomTo(api.current.rectOf(ids))));
         }}
       />
+  );
+  return (
+    <div className="relative flex min-h-0 flex-1">
+      {!uiHidden && (p.floating ? left && <div className={`${card} top-2 bottom-2 left-2`}>{left}</div> : left)}
+      {!uiHidden && (p.floating ? <div className={`${card} top-2 ${p.leftHidden ? "left-2" : "left-[calc(var(--left-w)+1rem)]"}`}><Toolbar tool={tool} onTool={chooseTool} /></div> : <Toolbar tool={tool} onTool={chooseTool} />)}
+      {!uiHidden && p.leftHidden && <SidebarButton className="absolute top-2 left-2 z-30 bg-panel" />}
+      <CanvasMenu {...menu} under={under} empty={!under.length}>
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: records where the context menu opened */}
+        <div
+          className="flex min-w-0 flex-1"
+          onContextMenu={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            menuPoint.current = api.current?.toWorld(e.clientX - r.left, e.clientY - r.top) ?? null;
+            // Layers under the pointer, topmost first (for "Select layer"); none means empty canvas.
+            const ids = document.elementsFromPoint(e.clientX, e.clientY).map((el) => el.closest("[data-node]")?.getAttribute("data-node"));
+            setUnder([...new Set(ids)].filter((id): id is string => !!id && !!store.nodes.get(id) && store.nodes.get(id)?.kind !== "vector"));
+          }}
+        >
+          <Canvas store={store} tool={tool} setTool={setTool} cam={cam} setCam={setCam} spaceDown={spaceDown} apiRef={api} onImageTool={() => imageInput.current?.click()} agentBoards={agentBoards} />
+        </div>
+      </CanvasMenu>
+      {agentPanel && !uiHidden && <AgentPanel store={store} agents={agents} calls={calls} onClose={() => setAgentPanel(false)} />}
+      {!uiHidden && (p.floating ? <div className={`${card} top-2 right-2 bottom-2`}>{inspector}</div> : inspector)}
       <input
         ref={imageInput}
         type="file"
@@ -388,11 +505,7 @@ export function Editor({ store, agents, calls }: { store: DocStore; agents: Agen
         }}
       />
       <CodeDialog title={code?.title ?? ""} code={code?.text ?? null} onClose={() => setCode(null)} />
-      {toast && (
-        <output data-testid="toast" className="fixed bottom-6 left-1/2 z-50 max-w-[80vw] -translate-x-1/2 truncate rounded-popover border border-line bg-panel px-3 py-2 text-base shadow-popover">
-          {toast}
-        </output>
-      )}
+      <Toast>{toast}</Toast>
     </div>
   );
 }

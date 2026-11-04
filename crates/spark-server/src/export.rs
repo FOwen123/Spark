@@ -257,7 +257,7 @@ pub fn rasterize(svg: &str, scale: f64) -> Result<image::RgbaImage, String> {
 }
 
 /// Encodes an image; JPG gets a white background since it has no alpha.
-pub fn encode(img: &image::RgbaImage, format: Format) -> Result<Vec<u8>, String> {
+pub fn encode(img: &image::RgbaImage, format: Format, quality: u8) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     let mut cur = std::io::Cursor::new(&mut out);
     match format {
@@ -270,7 +270,7 @@ pub fn encode(img: &image::RgbaImage, format: Format) -> Result<Vec<u8>, String>
                 let mix = |c: u8| ((c as u32 * a + 255 * (255 - a)) / 255) as u8;
                 *d = image::Rgb([mix(s[0]), mix(s[1]), mix(s[2])]);
             }
-            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cur, 90).encode_image(&rgb)
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut cur, quality.clamp(1, 100)).encode_image(&rgb)
         }
         _ => return Err("not a raster format".into()),
     }
@@ -326,6 +326,7 @@ pub async fn export_node(
     id: NodeId,
     format: Format,
     scale: Scale,
+    quality: u8,
 ) -> Result<(String, Vec<u8>), String> {
     let (file, name, svg, rect, code) = {
         let mut d = doc.lock().unwrap();
@@ -386,7 +387,7 @@ pub async fn export_node(
                 (_, Some(svg)) => rasterize(&svg, factor)?,
                 (None, None) => unreachable!(),
             };
-            encode(&img, format)?
+            encode(&img, format, quality)?
         }
     };
     Ok((name, bytes))
@@ -406,17 +407,23 @@ pub fn combined_pdf(doc: &mut Document, ids: &[NodeId]) -> Result<Vec<u8>, Strin
     pdf(&svgs)
 }
 
+/// An export setting: format, scale, filename suffix (empty = the scale's) and JPEG quality.
+pub type Preset = (Format, Scale, String, u8);
+
+const JPEG_QUALITY: u8 = 90;
+
 /// Export presets from a JSON list like `[{"format": "png", "scale": "2x"}]` (empty = PNG 1x).
-pub fn presets(v: &serde_json::Value) -> Result<Vec<(Format, Scale, String)>, String> {
+pub fn presets(v: &serde_json::Value) -> Result<Vec<Preset>, String> {
     let list = v.as_array().cloned().unwrap_or_default();
     if list.is_empty() {
-        return Ok(vec![(Format::Png, Scale::Factor(1.0), String::new())]);
+        return Ok(vec![(Format::Png, Scale::Factor(1.0), String::new(), JPEG_QUALITY)]);
     }
     list.iter()
         .map(|p| {
             let format = Format::parse(p["format"].as_str().unwrap_or("png"))?;
             let scale = Scale::parse(p["scale"].as_str().unwrap_or("1x"))?;
-            Ok((format, scale, p["suffix"].as_str().unwrap_or_default().to_string()))
+            let quality = p["quality"].as_u64().map_or(JPEG_QUALITY, |q| q.clamp(1, 100) as u8);
+            Ok((format, scale, p["suffix"].as_str().unwrap_or_default().to_string(), quality))
         })
         .collect()
 }
@@ -426,12 +433,12 @@ pub async fn export_presets(
     hub: Option<&Hub>,
     doc: &crate::hub::DocRef,
     id: NodeId,
-    presets: &[(Format, Scale, String)],
+    presets: &[Preset],
     dir: &Path,
 ) -> Result<Vec<PathBuf>, String> {
     let mut paths = Vec::new();
-    for (format, scale, suffix) in presets {
-        let (name, bytes) = export_node(hub, doc, id, *format, *scale).await?;
+    for (format, scale, suffix, quality) in presets {
+        let (name, bytes) = export_node(hub, doc, id, *format, *scale, *quality).await?;
         let suffix = if suffix.is_empty() && format.is_raster() { scale.suffix() } else { suffix.clone() };
         paths.push(save(dir, &format!("{name}{suffix}"), format.ext(), &bytes)?);
     }
@@ -472,7 +479,7 @@ mod tests {
         assert_eq!((img.width(), img.height()), (80, 40));
         assert_eq!(img.get_pixel(1, 1).0, [255, 0, 0, 255]);
         for f in [Format::Png, Format::Jpg, Format::Webp] {
-            let bytes = encode(&img, f).unwrap();
+            let bytes = encode(&img, f, 90).unwrap();
             let back = image::load_from_memory(&bytes).unwrap();
             assert_eq!((back.width(), back.height()), (80, 40));
         }

@@ -90,6 +90,57 @@ async fn snapshot_intents_and_patches() {
 }
 
 #[tokio::test]
+async fn duplicating_a_page_copies_its_artboards_in_one_undo_step() {
+    let s = TestServer::start().await;
+    let mut ws = connect(&s, &s.token).await.unwrap();
+    let mut seen = Vec::new();
+    let id =
+        request(&mut ws, 1, json!({"t": "create", "name": "Dup"}), &mut seen).await["id"].as_str().unwrap().to_string();
+    let snap = request(&mut ws, 2, json!({"t": "open", "ref": id}), &mut seen).await;
+    let page = snap["page"].as_str().unwrap().to_string();
+    request(
+        &mut ws,
+        3,
+        json!({"t": "do", "file": id, "cmd": {"type": "setPage", "id": page, "prop": "icon", "value": "check"}}),
+        &mut seen,
+    )
+    .await;
+    seen.clear();
+    let r =
+        request(&mut ws, 4, json!({"t": "do", "file": id, "cmd": {"type": "duplicatePage", "id": page}}), &mut seen)
+            .await;
+    let copy = r["id"].as_str().unwrap();
+    let patch = seen.iter().find(|m| m["t"] == "patch").unwrap();
+    let pages = patch["pages"].as_array().unwrap();
+    assert_eq!(pages.len(), 2);
+    assert_eq!(pages[1]["id"], copy);
+    assert_eq!(pages[1]["name"], "Page 1 copy");
+    assert_eq!(pages[1]["icon"], "check");
+    assert_eq!(patch["nodes"].as_object().unwrap().values().filter(|n| n["parent"] == copy).count(), 1);
+
+    seen.clear();
+    request(&mut ws, 5, json!({"t": "do", "file": id, "cmd": {"type": "undo"}}), &mut seen).await;
+    let patch = seen.iter().find(|m| m["t"] == "patch").unwrap();
+    assert_eq!(patch["pages"].as_array().unwrap().len(), 1, "one undo removes the page and its artboards");
+}
+
+#[tokio::test]
+async fn duplicating_a_file_opens_an_independent_copy() {
+    let s = TestServer::start().await;
+    let mut ws = connect(&s, &s.token).await.unwrap();
+    let mut seen = Vec::new();
+    let id = request(&mut ws, 1, json!({"t": "create", "name": "Orig"}), &mut seen).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    request(&mut ws, 2, json!({"t": "open", "ref": id}), &mut seen).await;
+    let copy = request(&mut ws, 3, json!({"t": "duplicate", "id": id}), &mut seen).await;
+    assert_ne!(copy["id"], id.as_str());
+    assert_eq!(copy["name"], "Orig copy");
+    assert!(s.files_dir().join("Orig copy.spark").exists());
+}
+
+#[tokio::test]
 async fn drag_session_snaps_and_is_one_undo_step() {
     let s = TestServer::start().await;
     let mut ws = connect(&s, &s.token).await.unwrap();
@@ -135,6 +186,52 @@ async fn drag_session_snaps_and_is_one_undo_step() {
     request(&mut ws, 9, json!({"t": "do", "file": id, "cmd": {"type": "undo"}}), &mut seen).await;
     let patch = seen.iter().find(|m| m["t"] == "patch").unwrap();
     assert_eq!(patch["nodes"][b.as_str()]["css"]["left"], "300px", "one undo restores the start position");
+}
+
+#[tokio::test]
+async fn pixel_snap_rounds_drag_and_resize_to_whole_pixels() {
+    let s = TestServer::start().await;
+    let mut ws = connect(&s, &s.token).await.unwrap();
+    let mut seen = Vec::new();
+    let id = request(&mut ws, 1, json!({"t": "create", "name": "Pixels"}), &mut seen).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let snap = request(&mut ws, 2, json!({"t": "open", "ref": id}), &mut seen).await;
+    let board = snap["nodes"].as_object().unwrap().keys().next().unwrap().clone();
+    let mk = json!({"type": "create", "kind": "rect", "parent": board, "x": 0, "y": 0, "w": 100, "h": 100});
+    let a = request(&mut ws, 3, json!({"t": "do", "file": id, "cmd": mk}), &mut seen).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let rects =
+        json!({"t": "rects", "file": id, "rects": {board.as_str(): [0, 0, 1440, 1024], a.as_str(): [0, 0, 100, 100]}});
+    ws.send(Message::Text(rects.to_string().into())).await.unwrap();
+    for (pixel, left, top) in [(true, "12px", "8px"), (false, "12.4px", "7.6px")] {
+        request(&mut ws, 100, json!({"t": "do", "file": id, "cmd": {"type": "dragStart", "ids": [a]}}), &mut seen)
+            .await;
+        seen.clear();
+        let cmd = json!({"type": "drag", "dx": 12.4, "dy": 7.6, "snap": false, "pixel": pixel, "zoom": 1});
+        request(&mut ws, 103, json!({"t": "do", "file": id, "cmd": cmd}), &mut seen).await;
+        let patch = seen.iter().find(|m| m["t"] == "patch").unwrap();
+        assert_eq!(patch["nodes"][a.as_str()]["css"]["left"], left);
+        assert_eq!(patch["nodes"][a.as_str()]["css"]["top"], top);
+        request(&mut ws, 101, json!({"t": "do", "file": id, "cmd": {"type": "dragEnd"}}), &mut seen).await;
+        request(&mut ws, 102, json!({"t": "do", "file": id, "cmd": {"type": "undo"}}), &mut seen).await;
+    }
+    request(&mut ws, 110, json!({"t": "do", "file": id, "cmd": {"type": "resizeStart", "ids": [a]}}), &mut seen).await;
+    seen.clear();
+    let rect = json!({"x": 0, "y": 0, "w": 120.6, "h": 99.4});
+    request(
+        &mut ws,
+        111,
+        json!({"t": "do", "file": id, "cmd": {"type": "resize", "rect": rect, "snap": false, "pixel": true}}),
+        &mut seen,
+    )
+    .await;
+    let patch = seen.iter().find(|m| m["t"] == "patch").unwrap();
+    assert_eq!(patch["nodes"][a.as_str()]["css"]["width"], "121px");
+    assert_eq!(patch["nodes"][a.as_str()]["css"]["height"], "99px");
 }
 
 #[tokio::test]
@@ -249,4 +346,258 @@ async fn an_agent_moving_an_artboard_moves_its_reported_position() {
         world(&mcp(&s, "get_node_info", json!({"fileId": id, "nodeId": child})).await),
         (Some(3010.0), Some(1220.0))
     );
+}
+
+#[tokio::test]
+async fn style_text_replace_and_svg_intents() {
+    let s = TestServer::start().await;
+    let mut ws = connect(&s, &s.token).await.unwrap();
+    let mut seen = Vec::new();
+    let file = request(&mut ws, 1, json!({"t": "create", "name": "Clip"}), &mut seen).await;
+    let id = file["id"].as_str().unwrap().to_string();
+    let snap = request(&mut ws, 2, json!({"t": "open", "ref": id}), &mut seen).await;
+    let board = snap["nodes"].as_object().unwrap().keys().next().unwrap().clone();
+    let mut rid = 10;
+    let mut go = async |ws: &mut Ws, seen: &mut Vec<Value>, cmd: Value| {
+        rid += 1;
+        request(ws, rid, json!({"t": "do", "file": id, "cmd": cmd}), seen).await
+    };
+    let a = go(
+        &mut ws,
+        &mut seen,
+        json!({"type": "create", "kind": "rect", "parent": board, "x": 10, "y": 10, "w": 100, "h": 50}),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = go(
+        &mut ws,
+        &mut seen,
+        json!({"type": "create", "kind": "rect", "parent": board, "x": 200, "y": 10, "w": 100, "h": 50}),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let t = go(
+        &mut ws,
+        &mut seen,
+        json!({"type": "create", "kind": "text", "parent": board, "x": 10, "y": 100, "w": 0, "h": 0, "text": "Hi"}),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ws.send(Message::Text(json!({"t": "rects", "file": id, "rects": {&board: [0, 0, 1440, 1024], &a: [10, 10, 100, 50], &b: [200, 10, 100, 50]}}).to_string().into()))
+        .await
+        .unwrap();
+    let node = |seen: &[Value], n: &str| seen.iter().rev().find_map(|m| m["nodes"].get(n).cloned()).unwrap();
+
+    // Pasting a style sets appearance fields in one undo step; the size stays.
+    let red = json!([{"type": "solid", "color": "#ff0000"}]);
+    go(&mut ws, &mut seen, json!({"type": "pasteStyle", "ids": [b], "style": {"fills": red, "radius": ["8px", "8px", "8px", "8px"], "width": "5px"}})).await;
+    let v = node(&seen, &b);
+    assert!(v["style"]["fills"][0]["color"].as_str().unwrap().starts_with("oklch"));
+    assert_eq!(v["style"]["radius"], json!(["8px", "8px", "8px", "8px"]));
+    assert_eq!(v["style"]["width"], "100px");
+    go(&mut ws, &mut seen, json!({"type": "undo"})).await;
+    let v = node(&seen, &b);
+    assert_eq!(v["style"]["fills"][0]["color"], "oklch(0.8853 0 0)");
+    assert!(v["style"]["radius"].is_null());
+
+    // Type fields only reach text layers.
+    go(&mut ws, &mut seen, json!({"type": "pasteStyle", "ids": [a, t], "text": true, "style": {"fontSize": "30px"}}))
+        .await;
+    assert_eq!(node(&seen, &t)["style"]["fontSize"], "30px");
+    assert!(node(&seen, &a)["style"]["fontSize"].is_null());
+
+    // Adjust text steps each text layer by its own value.
+    go(&mut ws, &mut seen, json!({"type": "adjustText", "ids": [t, a], "prop": "fontSize", "dir": -1})).await;
+    assert_eq!(node(&seen, &t)["style"]["fontSize"], "29px");
+    go(&mut ws, &mut seen, json!({"type": "adjustText", "ids": [t], "prop": "fontWeight", "dir": 1})).await;
+    assert_eq!(node(&seen, &t)["style"]["fontWeight"], 500);
+
+    // Replace swaps the target for the clipboard layers at its place, in one step.
+    let mut clip = node(&seen, &a);
+    for k in ["parent", "key", "css"] {
+        clip.as_object_mut().unwrap().remove(k);
+    }
+    let r = go(&mut ws, &mut seen, json!({"type": "pasteSpark", "roots": [{"node": clip, "rect": {"x": 10, "y": 10, "w": 100, "h": 50}, "children": []}], "replace": [b]})).await;
+    let new = r["ids"][0].as_str().unwrap().to_string();
+    assert!(node(&seen, &b).is_null());
+    assert_eq!(node(&seen, &new)["css"]["left"], "200px");
+    go(&mut ws, &mut seen, json!({"type": "undo"})).await;
+    assert!(node(&seen, &new).is_null());
+    assert!(!node(&seen, &b).is_null());
+
+    // SVG of a layer.
+    let svg = go(&mut ws, &mut seen, json!({"type": "code", "ids": [a], "format": "svg"})).await;
+    assert!(svg.as_str().unwrap().starts_with("<svg"), "{svg}");
+}
+
+#[tokio::test]
+async fn replace_color_edits_a_selection_and_its_children_in_one_undo_step() {
+    let s = TestServer::start().await;
+    let mut ws = connect(&s, &s.token).await.unwrap();
+    let mut seen = Vec::new();
+    let id = request(&mut ws, 1, json!({"t": "create", "name": "Colors"}), &mut seen).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let snap = request(&mut ws, 2, json!({"t": "open", "ref": id}), &mut seen).await;
+    let board = snap["nodes"].as_object().unwrap().keys().next().unwrap().clone();
+    let mk = |x: i32| json!({"type": "create", "kind": "rect", "parent": board, "x": x, "y": 0, "w": 10, "h": 10});
+    let a = request(&mut ws, 3, json!({"t": "do", "file": id, "cmd": mk(0)}), &mut seen).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = request(&mut ws, 4, json!({"t": "do", "file": id, "cmd": mk(20)}), &mut seen).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let styles = json!({"backgroundColor": "#ff0000", "border": "2px solid #ff0000"});
+    request(
+        &mut ws,
+        5,
+        json!({"t": "do", "file": id, "cmd": {"type": "setStyle", "ids": [a, b], "styles": styles}}),
+        &mut seen,
+    )
+    .await;
+    seen.clear();
+    request(&mut ws, 6, json!({"t": "do", "file": id, "cmd": {"type": "replaceColor", "ids": [board], "from": "#ff0000", "to": "#00ff00"}}), &mut seen).await;
+    let patch = seen.iter().find(|m| m["t"] == "patch").unwrap();
+    for n in [&a, &b] {
+        assert_eq!(patch["nodes"][n.as_str()]["css"]["backgroundColor"], "#00ff00");
+        assert_eq!(patch["nodes"][n.as_str()]["css"]["border"], "2px solid #00ff00");
+    }
+    seen.clear();
+    request(&mut ws, 7, json!({"t": "do", "file": id, "cmd": {"type": "undo"}}), &mut seen).await;
+    let patch = seen.iter().find(|m| m["t"] == "patch").unwrap();
+    assert_eq!(patch["nodes"][a.as_str()]["css"]["backgroundColor"], "#ff0000");
+    assert_eq!(patch["nodes"][b.as_str()]["css"]["backgroundColor"], "#ff0000");
+}
+
+#[tokio::test]
+async fn folders_move_duplicate_and_rename_files() {
+    let s = TestServer::start().await;
+    let mut ws = connect(&s, &s.token).await.unwrap();
+    let mut seen = Vec::new();
+    let file = request(&mut ws, 1, json!({"t": "create", "name": "Logo"}), &mut seen).await;
+    let id = file["id"].as_str().unwrap().to_string();
+    request(&mut ws, 2, json!({"t": "mkdir", "dir": "", "name": "Brand"}), &mut seen).await;
+
+    let top = request(&mut ws, 3, json!({"t": "browse", "dir": ""}), &mut seen).await;
+    assert_eq!(top["folders"], json!(["Brand"]));
+    assert_eq!(top["files"][0]["folder"], "");
+
+    // A file open in a tab can't move; closed, it does, and the list says where it is.
+    request(&mut ws, 4, json!({"t": "open", "ref": id}), &mut seen).await;
+    let busy = json!({"t": "move", "id": id, "dir": "Brand", "rid": 5});
+    ws.send(Message::Text(busy.to_string().into())).await.unwrap();
+    loop {
+        let v: Value = serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        if v["t"] == "reply" && v["rid"] == json!(5) {
+            assert_eq!(v["ok"], json!(false));
+            break;
+        }
+    }
+    request(&mut ws, 6, json!({"t": "close", "file": id}), &mut seen).await;
+    let moved = request(&mut ws, 7, json!({"t": "move", "id": id, "dir": "Brand"}), &mut seen).await;
+    assert!(moved["path"].as_str().unwrap().ends_with("Brand/Logo.spark"));
+    assert!(s.files_dir().join("Brand/Logo.spark").exists());
+    assert!(!s.files_dir().join("Logo.spark").exists());
+    let inside = request(&mut ws, 8, json!({"t": "browse", "dir": "Brand"}), &mut seen).await;
+    assert_eq!(inside["files"][0]["folder"], "Brand");
+
+    // Escapes are refused and nothing moves.
+    for dir in ["..", "../..", "Brand/../.."] {
+        let bad = json!({"t": "move", "id": id, "dir": dir, "rid": 9});
+        ws.send(Message::Text(bad.to_string().into())).await.unwrap();
+        loop {
+            let v: Value = serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            if v["t"] == "reply" && v["rid"] == json!(9) {
+                assert_eq!(v["ok"], json!(false), "{dir}");
+                break;
+            }
+        }
+    }
+    assert!(s.files_dir().join("Brand/Logo.spark").exists());
+
+    // Duplicate lands beside the original under a new id; rename changes the listed name.
+    let copy = request(&mut ws, 10, json!({"t": "duplicate", "id": id}), &mut seen).await;
+    assert_ne!(copy["id"], json!(id));
+    assert_eq!(copy["name"], "Logo copy");
+    assert!(s.files_dir().join("Brand/Logo copy.spark").exists());
+    request(&mut ws, 11, json!({"t": "rename", "id": id, "name": "Wordmark"}), &mut seen).await;
+    // Renaming from an open tab (the `do` intent) reaches the list as well.
+    request(&mut ws, 13, json!({"t": "open", "ref": copy["id"]}), &mut seen).await;
+    request(
+        &mut ws,
+        14,
+        json!({"t": "do", "file": copy["id"], "cmd": {"type": "renameFile", "name": "Tab rename"}}),
+        &mut seen,
+    )
+    .await;
+    let list = request(&mut ws, 12, json!({"t": "browse", "dir": "Brand"}), &mut seen).await;
+    let names: Vec<&str> = list["files"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
+    assert!(names.contains(&"Wordmark") && names.contains(&"Tab rename"), "{names:?}");
+}
+
+#[tokio::test]
+async fn arrange_commands_align_distribute_ungroup_and_swap_colors() {
+    let s = TestServer::start().await;
+    let mut ws = connect(&s, &s.token).await.unwrap();
+    let mut seen = Vec::new();
+    let file = request(&mut ws, 1, json!({"t": "create", "name": "Arrange"}), &mut seen).await;
+    let id = file["id"].as_str().unwrap().to_string();
+    let snap = request(&mut ws, 2, json!({"t": "open", "ref": id}), &mut seen).await;
+    let board = snap["nodes"].as_object().unwrap().keys().next().unwrap().clone();
+    let mut rects = json!({ &board: [0, 0, 1440, 1024] });
+    let mut made = Vec::new();
+    for (i, (x, w)) in [(10, 50), (100, 80), (300, 40)].into_iter().enumerate() {
+        let c = json!({"type": "create", "kind": "rect", "parent": board, "x": x, "y": 20 * i, "w": w, "h": 30});
+        let r = request(&mut ws, 10 + i as u64, json!({"t": "do", "file": id, "cmd": c}), &mut seen).await;
+        let rid = r["id"].as_str().unwrap().to_string();
+        rects[&rid] = json!([x, 20 * i, w, 30]);
+        made.push(rid);
+    }
+    ws.send(Message::Text(json!({"t": "rects", "file": id, "rects": rects}).to_string().into())).await.unwrap();
+    let left = |seen: &[Value], n: &str| {
+        seen.iter().rev().find_map(|m| m["nodes"][n]["css"]["left"].as_str().map(str::to_string))
+    };
+    let mut rid = 20;
+    let mut run = async |ws: &mut Ws, seen: &mut Vec<Value>, cmd: Value| {
+        rid += 1;
+        request(ws, rid, json!({"t": "do", "file": id, "cmd": cmd}), seen).await
+    };
+
+    // Distribute: the middle layer lands so both gaps are equal (gap = (330 - 170) / 2 = 80).
+    run(&mut ws, &mut seen, json!({"type": "distribute", "ids": made, "dir": "x"})).await;
+    assert_eq!(left(&seen, &made[1]).as_deref(), Some("140px"));
+    // Align right: every layer's right edge meets the union's (340).
+    run(&mut ws, &mut seen, json!({"type": "align", "ids": made, "dir": "right"})).await;
+    assert_eq!(left(&seen, &made[0]).as_deref(), Some("290px"));
+    assert_eq!(left(&seen, &made[2]).as_deref(), Some("300px"));
+    // Quarter turn and mirror.
+    run(&mut ws, &mut seen, json!({"type": "transform", "ids": [made[0]], "dir": "rotate90"})).await;
+    run(&mut ws, &mut seen, json!({"type": "transform", "ids": [made[0]], "dir": "flipH"})).await;
+    let patch = seen.iter().rev().find(|m| m["nodes"][&made[0]].is_object()).unwrap();
+    assert_eq!(patch["nodes"][&made[0]]["css"]["scale"], "-1 1");
+
+    // Group two layers in a frame, then ungroup: they return to the board where they were.
+    let w = run(&mut ws, &mut seen, json!({"type": "wrap", "ids": [made[0], made[1]]})).await;
+    let frame = w["id"].as_str().unwrap().to_string();
+    let r = run(&mut ws, &mut seen, json!({"type": "ungroup", "ids": [frame]})).await;
+    assert_eq!(r["ids"].as_array().unwrap().len(), 2);
+    let patch = seen.iter().rev().find(|m| m["nodes"][&made[1]]["parent"].is_string()).unwrap();
+    assert_eq!(patch["nodes"][&made[1]]["parent"], board.as_str());
+    assert_eq!(patch["nodes"][&frame], Value::Null);
+
+    // Swap fill and border colours: red fill, blue border become blue fill, red border.
+    run(&mut ws, &mut seen, json!({"type": "setStyle", "ids": [made[2]], "styles": {"background-color": "#ff0000", "border": "2px solid #0000ff"}})).await;
+    run(&mut ws, &mut seen, json!({"type": "swapColors", "ids": [made[2]]})).await;
+    let patch = seen.iter().rev().find(|m| m["nodes"][&made[2]]["style"]["border"].is_object()).unwrap();
+    // Colours serialize as OKLCH; red is hue ~29.
+    assert!(patch["nodes"][&made[2]]["style"]["border"]["color"].as_str().unwrap().starts_with("oklch(0.628"));
 }

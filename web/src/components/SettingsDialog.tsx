@@ -2,6 +2,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { Minus, Settings, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Conn } from "../lib/conn";
+import { CANVAS_PREFS, setPrefs, usePrefs } from "../lib/prefs";
 
 type Provider = {
   id: string;
@@ -20,12 +21,54 @@ type State = { grantedDirs: string[]; perCallCap: number; monthlyBudget: number 
 
 const input = "h-7 min-w-0 rounded-control bg-control px-2 text-sm outline-none";
 
+/** Canvas behavior, stored on this device (see lib/prefs.ts). */
+function CanvasPrefs() {
+  const p = usePrefs();
+  const nudge = (key: "nudgeSmall" | "nudgeLarge", label: string) => (
+    <label className="flex flex-col gap-1">
+      {label}
+      <input
+        aria-label={label}
+        type="number"
+        min={0.01}
+        step={1}
+        value={p[key]}
+        className={input}
+        onChange={(e) => Number(e.target.value) > 0 && setPrefs({ [key]: Number(e.target.value) })}
+      />
+    </label>
+  );
+  return (
+    <section aria-label="Canvas" className="mb-5">
+      <h3 className="mb-2 text-base font-medium">Canvas</h3>
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+        {CANVAS_PREFS.map(([key, label]) => (
+          <label key={key} className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={p[key] as boolean} onChange={(e) => setPrefs({ [key]: e.target.checked })} />
+            {label}
+          </label>
+        ))}
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-3 text-sm text-fg-2">
+        {nudge("nudgeSmall", "Nudge step (px)")}
+        {nudge("nudgeLarge", "Big nudge step, with Shift (px)")}
+      </div>
+    </section>
+  );
+}
+
 export function SettingsButton({ conn }: { conn: Conn }) {
   const [open, setOpen] = useState(false);
   const [s, setS] = useState<State | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [newDir, setNewDir] = useState("");
   const load = () => conn.request<State>({ t: "settingsGet" }).then(setS);
+  // The file menu opens this dialog by command.
+  useEffect(() => {
+    const on = (e: Event) => (e as CustomEvent<string>).detail === "showSettings" && setOpen(true);
+    window.addEventListener("spark:command", on);
+    return () => window.removeEventListener("spark:command", on);
+  }, []);
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload each time the dialog opens
   useEffect(() => {
     if (open) load();
@@ -57,6 +100,7 @@ export function SettingsButton({ conn }: { conn: Conn }) {
           <Dialog.Description className="sr-only">Image generation and file access settings</Dialog.Description>
           {s && (
             <div className="min-h-0 overflow-auto p-4 spark-scroll">
+              <CanvasPrefs />
               {error && <p className="mb-3 text-base text-fg-2">⚠ {error}</p>}
               <h3 className="text-base font-medium">Image providers</h3>
               <p className="mt-1 mb-2 text-sm text-fg-2">

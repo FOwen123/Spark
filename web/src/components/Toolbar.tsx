@@ -1,5 +1,7 @@
 import { Fragment } from "react";
 import { Frame, Hand, Image, MousePointer2, Square, Type } from "lucide-react";
+import { comboFor } from "../lib/keymap";
+import { Tip } from "./Tip";
 
 export type Tool = "move" | "frame" | "rect" | "text" | "image" | "hand";
 
@@ -19,18 +21,13 @@ export function Toolbar({ tool, onTool }: { tool: Tool; onTool: (t: Tool) => voi
         <Fragment key={id}>
           {/* Navigation tools sit above the tools that create layers. */}
           {id === "frame" && <div className="my-1 h-px w-5 bg-line" />}
-          <button
-            type="button"
-            title={`${label} (${key})`}
-            aria-label={label}
-            aria-pressed={tool === id}
-            onClick={() => onTool(id)}
-            className="grid h-8 w-9 place-items-center"
-          >
-            <span className={`grid size-7 place-items-center rounded-control ${tool === id ? "bg-selected text-selected-fg" : "text-fg-2 hover:bg-hover"}`}>
-              <Icon size={16} strokeWidth={1.5} />
-            </span>
-          </button>
+          <Tip label={label} combo={comboFor(`tool.${id}`) ?? key.toLowerCase()}>
+            <button type="button" aria-label={label} aria-pressed={tool === id} onClick={() => onTool(id)} className="grid h-8 w-9 place-items-center">
+              <span className={`grid size-7 place-items-center rounded-control ${tool === id ? "bg-selected text-selected-fg" : "text-fg-2 hover:bg-hover"}`}>
+                <Icon size={16} strokeWidth={1.5} />
+              </span>
+            </button>
+          </Tip>
         </Fragment>
       ))}
     </nav>

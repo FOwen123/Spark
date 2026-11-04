@@ -1,10 +1,12 @@
-import { ChevronDown, Download } from "lucide-react";
+import { Copy, Download, Settings2 } from "lucide-react";
 import { useState } from "react";
 import { type DocStore, useDoc, useRects } from "../lib/doc";
 import type { Camera } from "../lib/geometry";
+import { renderToPng } from "../lib/render";
 import type { Agent, ExportPreset, Rect } from "../lib/types";
 import { BusyDots } from "./AppBar";
-import { ColorField, IconButton, RowTools, Section, Select } from "./inspector/fields";
+import { ColorField, IconButton, NumField, Pop, RowTools, Section, Select, StoreContext } from "./inspector/fields";
+import { SelectionColorsSection } from "./inspector/SelectionColors";
 import {
   AppearanceSection,
   BorderSection,
@@ -12,18 +14,32 @@ import {
   EffectsSection,
   FillSection,
   LayoutSection,
+  OutlineSection,
   PositionSection,
   ShadowSection,
   TypographySection,
 } from "./inspector/sections";
+import { GuidesSection } from "./inspector/GuidesSection";
 import { ConnectDialog } from "./ConnectDialog";
+import { ZoomMenu } from "./ZoomMenu";
 
 const SCALES: [string, string][] = ["0.5x", "1x", "2x", "3x", "4x", "512w", "1024w", "512h"].map((s) => [s, s]);
 const FORMATS: [string, string][] = ["png", "jpg", "webp", "svg", "pdf"].map((f) => [f, f.toUpperCase()]);
 
+/** Puts a PNG of the first selected layer on the clipboard, at the scale of the first PNG export setting. */
+async function copyPng(store: DocStore, id: string, presets: ExportPreset[]) {
+  const factor = Number.parseFloat(presets.find((p) => p.format === "png")?.scale ?? "1");
+  const png = renderToPng(store, id, Number.isFinite(factor) && factor > 0 && presets.some((p) => p.format === "png" && p.scale.endsWith("x")) ? factor : 1).then(
+    async (b64) => (await fetch(`data:image/png;base64,${b64}`)).blob(),
+  );
+  // The clipboard item takes the promise itself, so Safari keeps the click's permission while it renders.
+  await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+}
+
 function ExportSection({ store, n, ids, setProp }: Ctx) {
   const presets: ExportPreset[] = n.exports ?? [];
   const set = (next: ExportPreset[]) => setProp("exports", next.length ? next : null);
+  const [copied, setCopied] = useState<string | null>(null);
   return (
     <Section title="Export" onAdd={() => set([...presets, { format: "png", scale: presets.length ? "2x" : "1x" }])}>
       {presets.map((p, i) => (
@@ -35,6 +51,27 @@ function ExportSection({ store, n, ids, setProp }: Ctx) {
         >
           <Select label="Export scale" value={p.scale} options={SCALES} onChange={(scale) => set(presets.map((x, j) => (j === i ? { ...x, scale } : x)))} className="flex-1" />
           <Select label="Export format" value={p.format} options={FORMATS} onChange={(format) => set(presets.map((x, j) => (j === i ? { ...x, format } : x)))} className="flex-1" />
+          <Pop label="Export settings" icon={<Settings2 size={13} />} width={200}>
+            <div className="flex flex-col gap-2 p-1">
+              {p.format === "jpg" ? (
+                <NumField label="Q" title="JPEG quality" value={p.quality ?? 90} min={1} max={100} onCommit={(quality) => set(presets.map((x, j) => (j === i ? { ...x, quality } : x)))} />
+              ) : (
+                <p className="text-fg-3">{p.format === "webp" ? "WebP is exported lossless, so it has no quality setting." : "Quality applies to JPEG exports."}</p>
+              )}
+              <label className="flex h-6 items-center gap-1.5 rounded-control bg-control px-1.5">
+                <span className="shrink-0 text-fg-3">Suffix</span>
+                <input
+                  aria-label="File name suffix"
+                  size={1}
+                  placeholder={p.scale === "1x" ? "none" : `@${p.scale}`}
+                  defaultValue={p.suffix ?? ""}
+                  onBlur={(e) => e.target.value !== (p.suffix ?? "") && set(presets.map((x, j) => (j === i ? { ...x, suffix: e.target.value || undefined } : x)))}
+                  onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+                  className="min-w-0 flex-1 bg-transparent font-mono outline-none"
+                />
+              </label>
+            </div>
+          </Pop>
           <RowTools label="export setting" onRemove={() => set(presets.filter((_, j) => j !== i))} />
         </div>
       ))}
@@ -44,6 +81,17 @@ function ExportSection({ store, n, ids, setProp }: Ctx) {
         className="flex h-7 items-center justify-center gap-1.5 rounded-control border border-line text-sm hover:bg-hover"
       >
         <Download size={13} /> Export {ids.length > 1 ? `${ids.length} layers` : (store.nodes.get(ids[0])?.name ?? "")}
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          copyPng(store, ids[0], presets)
+            .then(() => setCopied("Copied"))
+            .catch((e: Error) => setCopied(`Copy failed: ${e.message}`))
+        }
+        className="flex h-7 items-center justify-center gap-1.5 rounded-control border border-line text-sm hover:bg-hover"
+      >
+        <Copy size={13} /> {copied ?? "Copy as PNG"}
       </button>
       {ids.length > 1 && (
         <button
@@ -133,7 +181,6 @@ export function Inspector(props: {
   const { store } = props;
   useDoc(store);
   useRects(store);
-  const [zoomMenu, setZoomMenu] = useState(false);
   const ids = store.selection.filter((id) => store.nodes.has(id));
   const n = ids.length ? store.nodes.get(ids[0]) : undefined;
   const tokens = new Map(store.tokens.map((t) => [t.name, t.value]));
@@ -147,43 +194,16 @@ export function Inspector(props: {
         setProp: (prop, value, merge) => store.do({ type: "set", ids, prop, value, merge: merge && `${merge}:${ids.join()}` }),
       }
     : null;
-  const zoomItems: [string, string][] = [
-    ["Zoom in", "zoomIn"],
-    ["Zoom out", "zoomOut"],
-    ["Zoom to fit", "zoomFit"],
-    ["Zoom to selection", "zoomSelection"],
-    ["Zoom to 100%", "zoom100"],
-  ];
   return (
+    <StoreContext.Provider value={store}>
     <aside aria-label="Inspector" className="flex w-[var(--right-w)] shrink-0 flex-col border-l border-line bg-panel">
-      <div className="relative flex h-[var(--inspector-header-h)] shrink-0 items-center gap-1 border-b border-line px-3">
+      <div className="flex h-[var(--inspector-header-h)] shrink-0 items-center gap-1 border-b border-line px-3">
         <div className="min-w-0 flex-1 truncate text-base font-medium">{n ? (ids.length > 1 ? `${ids.length} layers` : n.name) : ""}</div>
-        <button type="button" data-testid="zoom" onClick={() => setZoomMenu(!zoomMenu)} className="flex h-6 items-center gap-1 rounded-control px-2 font-mono text-sm hover:bg-hover">
-          {Math.round(props.cam.zoom * 100)}%
-          <ChevronDown size={12} />
-        </button>
+        <ZoomMenu zoom={props.cam.zoom} run={props.run} />
         {n && (
           <IconButton label="Export" onClick={() => props.run("export")}>
             <Download size={14} />
           </IconButton>
-        )}
-        {zoomMenu && (
-          <div role="menu" className="absolute top-10 right-3 z-20 w-44 rounded-popover border border-line bg-panel p-1 shadow-popover">
-            {zoomItems.map(([label, cmd]) => (
-              <button
-                key={cmd}
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setZoomMenu(false);
-                  props.run(cmd);
-                }}
-                className="flex h-6 w-full items-center rounded-control px-2 text-left text-sm hover:bg-hover"
-              >
-                {label}
-              </button>
-            ))}
-          </div>
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-auto spark-scroll" key={ids.join()}>
@@ -191,12 +211,15 @@ export function Inspector(props: {
           <>
             <PositionSection {...ctx} />
             {ctx.n.kind === "frame" && <LayoutSection {...ctx} />}
+            {ctx.n.kind === "frame" && <GuidesSection {...ctx} />}
             <AppearanceSection {...ctx} />
             {ctx.n.kind !== "vector" && <FillSection {...ctx} />}
             <BorderSection {...ctx} />
+            <OutlineSection {...ctx} />
             <ShadowSection {...ctx} />
             {ctx.n.kind === "text" && <TypographySection {...ctx} />}
             <EffectsSection {...ctx} />
+            <SelectionColorsSection store={store} ids={ids} tokens={tokens} />
             <ExportSection {...ctx} />
           </>
         ) : (
@@ -207,5 +230,6 @@ export function Inspector(props: {
         )}
       </div>
     </aside>
+    </StoreContext.Provider>
   );
 }

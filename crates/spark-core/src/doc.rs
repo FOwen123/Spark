@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::{
     fractional::{is_valid_key, key_between},
     id::{IdError, NodeId, PageId, string_serde},
-    node::{Node, NodeKind, PAGE_ICONS, Page},
+    node::{LayoutGuide, Node, NodeKind, PAGE_ICONS, Page},
     tokens::{Token, validate_name},
 };
 
@@ -90,7 +90,7 @@ pub enum Op {
         parent: Parent,
         key: String,
     },
-    /// Set one property: `name`, `hidden`, `locked`, `text`, `tag`, `attrs`, `exports`, `image`,
+    /// Set one property: `name`, `hidden`, `locked`, `text`, `tag`, `attrs`, `exports`, `layoutGuides` (frames), `image`,
     /// `style` or `style.<field>`. `null` clears.
     Set {
         id: NodeId,
@@ -655,6 +655,17 @@ fn set_node_prop(node: &mut Node, prop: &str, value: Value) -> Result<Value, OpE
             if value.is_null() { Vec::new() } else { serde_json::from_value(value).map_err(bad)? },
         ))
         .unwrap(),
+        "layoutGuides" => {
+            if node.kind != NodeKind::Frame {
+                return invalid(format!("{} is not a frame", node.id));
+            }
+            let guides: Vec<LayoutGuide> =
+                if value.is_null() { Vec::new() } else { serde_json::from_value(value).map_err(bad)? };
+            if let Some(e) = guides.iter().find_map(|g| g.check().err()) {
+                return invalid(e);
+            }
+            serde_json::to_value(std::mem::replace(&mut node.layout_guides, guides)).unwrap()
+        }
         "image" => std::mem::replace(&mut node.image, (!value.is_null()).then_some(value)).unwrap_or(Value::Null),
         "style" => serde_json::to_value(std::mem::replace(
             &mut node.style,
@@ -702,6 +713,28 @@ mod tests {
         doc.apply(inv).unwrap();
         assert_eq!(doc.node_count(), 2);
         assert_eq!(doc.page_of(child), Some(page));
+    }
+
+    #[test]
+    fn layout_guides_set_validate_and_undo() {
+        let (mut doc, _, board) = doc_with_artboard();
+        let text = add(&mut doc, board, NodeKind::Text);
+        let cols = json!([{"kind": "columns", "count": 12, "gutter": 16, "margin": 24}, {"kind": "grid", "size": 8}]);
+        let inv = doc.apply(Op::Set { id: board, prop: "layoutGuides".into(), value: cols.clone() }).unwrap().unwrap();
+        assert_eq!(doc.node(board).unwrap().layout_guides.len(), 2);
+        let saved = serde_json::to_value(doc.node(board).unwrap()).unwrap();
+        assert_eq!(saved["layoutGuides"][0]["count"], 12, "stored on the node, so the file keeps them");
+        assert!(serde_json::from_value::<Node>(saved).unwrap().layout_guides == doc.node(board).unwrap().layout_guides);
+        doc.apply(inv).unwrap();
+        assert!(doc.node(board).unwrap().layout_guides.is_empty());
+        for bad in [
+            json!([{"kind": "columns", "count": 0}]),
+            json!([{"kind": "grid", "size": 0}]),
+            json!([{"kind": "rows", "count": 2, "gutter": -1}]),
+        ] {
+            assert!(doc.apply(Op::Set { id: board, prop: "layoutGuides".into(), value: bad }).is_err());
+        }
+        assert!(doc.apply(Op::Set { id: text, prop: "layoutGuides".into(), value: cols }).is_err(), "frames only");
     }
 
     #[test]

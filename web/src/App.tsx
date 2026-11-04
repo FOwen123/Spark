@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { ToolCall } from "./components/AgentPanel";
 import { AppBar } from "./components/AppBar";
 import { Editor } from "./components/Editor";
 import { Home } from "./components/Home";
+import { ShortcutsDialog } from "./components/ShortcutsDialog";
+import { AppToast } from "./components/Toast";
 import { sessionToken } from "./lib/auth";
 import { Conn } from "./lib/conn";
 import { DocStore } from "./lib/doc";
 import { pendingReveal } from "./lib/doc";
+import { commandFor } from "./lib/keymap";
 import { renderToPng } from "./lib/render";
 import type { Agent, FileInfo, Patch, Snapshot } from "./lib/types";
 
@@ -29,6 +32,9 @@ export function App() {
   const [theme, setTheme] = useState(initialTheme);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [calls, setCalls] = useState<ToolCall[]>([]);
+  const [shortcuts, setShortcuts] = useState(false);
+  /** Tabs closed this session, most recent last, for "reopen closed tab". */
+  const closed = useRef<string[]>([]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -58,6 +64,7 @@ export function App() {
 
   const closeTab = useCallback(
     (id: string) => {
+      closed.current = [...closed.current.filter((x) => x !== id), id].slice(-20);
       conn.send({ t: "close", file: id });
       setTabs((t) => t.filter((x) => x !== id));
       setStores((prev) => {
@@ -70,10 +77,68 @@ export function App() {
     [],
   );
 
+  /** Closes several tabs; `keep` becomes the active tab afterwards. */
+  const closeMany = useCallback(
+    (ids: string[], keep?: string) => {
+      for (const id of ids) closeTab(id);
+      if (keep) setActive(keep);
+    },
+    [closeTab],
+  );
+
+  const reorder = useCallback((id: string, over: string, after: boolean) => {
+    setTabs((t) => {
+      const rest = t.filter((x) => x !== id);
+      const at = rest.indexOf(over) + (after ? 1 : 0);
+      return [...rest.slice(0, at), id, ...rest.slice(at)];
+    });
+  }, []);
+
   const newFile = useCallback(async () => {
     const info = await conn.request<FileInfo>({ t: "create", name: "Untitled" });
     await openFile(info.id);
   }, [openFile]);
+
+  /** Tab and app-level commands, from shortcuts and the native menus. Returns false for any other command. */
+  const appCommand = useCallback(
+    (cmd: string) => {
+      const order = ["home", ...tabs];
+      const at = order.indexOf(active);
+      const go = (i: number) => setActive(order[(i + order.length) % order.length]);
+      if (/^tab\.[1-8]$/.test(cmd)) tabs[Number(cmd.slice(4)) - 1] && setActive(tabs[Number(cmd.slice(4)) - 1]);
+      else if (cmd === "tab.last") tabs.length && setActive(tabs[tabs.length - 1]);
+      else if (cmd === "tab.next") go(at + 1);
+      else if (cmd === "tab.prev") go(at - 1);
+      else if (cmd === "tab.new") newFile();
+      else if (cmd === "tab.reopen") {
+        const id = [...closed.current].reverse().find((x) => !tabs.includes(x));
+        if (id) {
+          closed.current = closed.current.filter((x) => x !== id);
+          openFile(id);
+        }
+      } else if (cmd === "app.home") setActive("home");
+      else if (cmd === "app.shortcuts") setShortcuts(true);
+      else return false;
+      return true;
+    },
+    [tabs, active, newFile, openFile],
+  );
+
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      const cmd = commandFor(e);
+      if (cmd && appCommand(cmd)) e.preventDefault();
+    };
+    // The editor's file menu asks for the shortcuts dialog with a `spark:command` event. Only that one:
+    // keyboard commands reach this handler directly and would otherwise run twice.
+    const on = (e: Event) => (e as CustomEvent<string>).detail === "app.shortcuts" && setShortcuts(true);
+    window.addEventListener("keydown", down);
+    window.addEventListener("spark:command", on);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("spark:command", on);
+    };
+  }, [appCommand]);
 
   // Restore tabs from the last session, then open `?open=<id, route, link or path>` if given.
   useEffect(() => {
@@ -121,7 +186,7 @@ export function App() {
       if (m.t === "menu") {
         if (m.cmd === "closeTab") {
           if (active !== "home") closeTab(active);
-        } else window.dispatchEvent(new CustomEvent("spark:menu", { detail: m.cmd }));
+        } else if (!appCommand(m.cmd as string)) window.dispatchEvent(new CustomEvent("spark:menu", { detail: m.cmd }));
       }
       if (m.t === "render") {
         const call = m.callId;
@@ -148,7 +213,7 @@ export function App() {
       off();
       offStatus();
     };
-  }, [stores, openFile, active, closeTab]);
+  }, [stores, openFile, active, closeTab, appCommand]);
 
   const store = active === "home" ? undefined : stores.get(active);
   return (
@@ -158,6 +223,8 @@ export function App() {
         active={active}
         onSelect={setActive}
         onClose={closeTab}
+        onCloseMany={closeMany}
+        onReorder={reorder}
         onNew={newFile}
         theme={theme}
         onTheme={() => setTheme(theme === "dark" ? "light" : "dark")}
@@ -175,6 +242,8 @@ export function App() {
       ) : (
         <Home conn={conn} token={token} onOpen={openFile} onNew={newFile} error={error} />
       )}
+      <ShortcutsDialog open={shortcuts} onOpenChange={setShortcuts} />
+      <AppToast />
     </div>
   );
 }

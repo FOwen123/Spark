@@ -41,6 +41,30 @@ fn side_files(path: &Path) -> Vec<(PathBuf, &'static str)> {
         .collect()
 }
 
+/// Moves a file (with any SQLite side files) into `dir`, renaming on a clash: `Name.spark`, `Name 2.spark`, …
+fn move_into(path: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Untitled".into());
+    let dest = unique_path(dir, &stem);
+    move_file(path, &dest).map_err(|e| format!("can't move {}: {e}", path.display()))?;
+    for (from, side) in side_files(path) {
+        let _ = move_file(&from, Path::new(&format!("{}{side}", dest.display())));
+    }
+    Ok(dest)
+}
+
+/// A `.spark` path in `dir` that doesn't exist yet: `base.spark`, `base 2.spark`, …
+fn unique_path(dir: &Path, base: &str) -> PathBuf {
+    (1..)
+        .map(|i| dir.join(if i == 1 { format!("{base}.spark") } else { format!("{base} {i}.spark") }))
+        .find(|p| !p.exists())
+        .unwrap()
+}
+
+/// A folder name that is one plain path component.
+fn valid_component(c: &str) -> bool {
+    !c.is_empty() && !c.starts_with('.') && !c.chars().any(|ch| "/\\:*?\"<>|".contains(ch) || ch.is_control())
+}
+
 pub fn default_dir() -> PathBuf {
     std::env::var_os("SPARK_CONFIG_DIR")
         .map(PathBuf::from)
@@ -137,16 +161,7 @@ impl Config {
             path.to_path_buf()
         } else {
             fs::create_dir_all(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
-            let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Untitled".into());
-            let dest = (1..)
-                .map(|i| dir.join(if i == 1 { format!("{stem}.spark") } else { format!("{stem} {i}.spark") }))
-                .find(|p| !p.exists())
-                .unwrap();
-            move_file(path, &dest).map_err(|e| format!("can't move {}: {e}", path.display()))?;
-            for (from, side) in side_files(path) {
-                let _ = move_file(&from, Path::new(&format!("{}{side}", dest.display())));
-            }
-            dest
+            move_into(path, &dir)?
         };
         self.forget(id);
         Ok(dest)
@@ -185,15 +200,88 @@ impl Config {
         }
     }
 
-    /// A path in the files dir that doesn't exist yet: `Untitled.spark`, `Untitled 2.spark`, …
-    pub fn new_file_path(&self, name: &str) -> PathBuf {
+    /// A path in `dir` (the files dir when `None`) that doesn't exist yet: `Untitled.spark`, `Untitled 2.spark`, …
+    pub fn new_file_path_in(&self, dir: Option<&Path>, name: &str) -> PathBuf {
         let clean: String = name.chars().map(|c| if "/\\:*?\"<>|".contains(c) { '-' } else { c }).collect();
         let clean = clean.trim();
-        let base = if clean.is_empty() { "Untitled" } else { clean };
-        (1..)
-            .map(|i| self.files_dir.join(if i == 1 { format!("{base}.spark") } else { format!("{base} {i}.spark") }))
-            .find(|p| !p.exists())
-            .unwrap()
+        unique_path(dir.unwrap_or(&self.files_dir), if clean.is_empty() { "Untitled" } else { clean })
+    }
+
+    pub fn new_file_path(&self, name: &str) -> PathBuf {
+        self.new_file_path_in(None, name)
+    }
+
+    /// A folder of the files dir, from a `/`-separated path relative to it (`""` is the files dir).
+    /// Refuses anything that could leave the files dir, symlinks included.
+    pub fn folder(&self, rel: &str) -> Result<PathBuf, String> {
+        fs::create_dir_all(&self.files_dir).map_err(|e| e.to_string())?;
+        let root = self.files_dir.canonicalize().map_err(|e| e.to_string())?;
+        let mut dir = root.clone();
+        for c in rel.split('/').filter(|c| !c.is_empty()) {
+            if !valid_component(c) {
+                return Err(format!("`{rel}` is not a folder in the files folder"));
+            }
+            dir.push(c);
+        }
+        let dir = dir.canonicalize().map_err(|_| format!("folder `{rel}` doesn't exist"))?;
+        if !dir.starts_with(&root) || !dir.is_dir() {
+            return Err(format!("`{rel}` is not a folder in the files folder"));
+        }
+        Ok(dir)
+    }
+
+    /// Where `path` sits in the files dir as a relative `/` path; `""` for the top or for files elsewhere.
+    pub fn folder_of(&self, path: &Path) -> String {
+        let root = self.files_dir.canonicalize().unwrap_or_else(|_| self.files_dir.clone());
+        let rel = path.parent().and_then(|p| p.strip_prefix(&root).ok()).unwrap_or(Path::new(""));
+        rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/")
+    }
+
+    /// Subfolders of a folder, by name. `Archive` stays out of the top level: archived files leave the recent list.
+    pub fn subfolders(&self, rel: &str) -> Result<Vec<String>, String> {
+        let mut names: Vec<String> = fs::read_dir(self.folder(rel)?)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| valid_component(n) && !(rel.is_empty() && n == "Archive"))
+            .collect();
+        names.sort_by_key(|n| n.to_lowercase());
+        Ok(names)
+    }
+
+    /// Creates a folder inside `parent`; returns its relative path.
+    pub fn mkdir(&self, parent: &str, name: &str) -> Result<String, String> {
+        let name = name.trim();
+        if !valid_component(name) {
+            return Err(format!("`{name}` can't be a folder name"));
+        }
+        let dir = self.folder(parent)?.join(name);
+        if dir.exists() {
+            return Err(format!("`{name}` already exists"));
+        }
+        fs::create_dir(&dir).map_err(|e| format!("can't create {}: {e}", dir.display()))?;
+        Ok(format!("{}/{name}", parent.trim_matches('/')).trim_start_matches('/').to_string())
+    }
+
+    /// Moves a file (with its side files) into a folder of the files dir and keeps its place in the recent
+    /// list. The caller makes sure Spark isn't holding it open.
+    pub fn relocate(&self, id: &str, path: &Path, rel: &str) -> Result<PathBuf, String> {
+        let dir = self.folder(rel)?;
+        let _edit = EDITS.lock().unwrap_or_else(|e| e.into_inner());
+        if path.parent() == Some(dir.as_path()) {
+            return Ok(path.to_path_buf());
+        }
+        // Read the list first: `recent` drops entries whose file is gone, which the old path is once moved.
+        let mut list = self.recent();
+        let dest = move_into(path, &dir)?;
+        for f in list.iter_mut().filter(|f| f.id == id) {
+            f.path = dest.clone();
+        }
+        if let Ok(json) = serde_json::to_vec_pretty(&list) {
+            let _ = write_private(&self.dir.join("recent.json"), &json);
+        }
+        Ok(dest)
     }
 }
 
@@ -245,5 +333,34 @@ mod tests {
         let list = c.recent();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "Renamed");
+    }
+
+    #[test]
+    fn folders_stay_inside_the_files_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = Config::load(dir.path().join("cfg"), dir.path().join("files")).unwrap();
+        assert_eq!(c.mkdir("", "Work").unwrap(), "Work");
+        assert_eq!(c.mkdir("Work", "Logos").unwrap(), "Work/Logos");
+        assert!(c.mkdir("", "Work").is_err());
+        for bad in ["..", "a/b", ".hidden", "x\\y", ""] {
+            assert!(c.mkdir("", bad).is_err(), "{bad}");
+        }
+        for bad in ["..", "Work/../..", "/etc", "Nope"] {
+            assert!(c.folder(bad).is_err(), "{bad}");
+        }
+        assert_eq!(c.subfolders("").unwrap(), ["Work"]);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path(), c.files_dir.join("Escape")).unwrap();
+            assert!(c.folder("Escape").is_err());
+            assert_eq!(c.subfolders("").unwrap(), ["Escape", "Work"]);
+        }
+        let file = c.files_dir.join("Work/Logos/a.spark");
+        assert_eq!(
+            c.folder_of(
+                &file.canonicalize().unwrap_or_else(|_| c.files_dir.canonicalize().unwrap().join("Work/Logos/a.spark"))
+            ),
+            "Work/Logos"
+        );
     }
 }

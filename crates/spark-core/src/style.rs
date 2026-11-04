@@ -177,11 +177,25 @@ pub enum Fill {
         /// CSS gradient angle in degrees (180 = top to bottom).
         angle: f64,
         stops: Vec<Stop>,
+        /// Interpolation color space (`srgb`, `oklab`, `oklch`); unset = the browser default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         hidden: bool,
     },
     Radial {
         stops: Vec<Stop>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
+        #[serde(default, skip_serializing_if = "is_false")]
+        hidden: bool,
+    },
+    Conic {
+        /// Angle the sweep starts at, in degrees.
+        angle: f64,
+        stops: Vec<Stop>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        space: Option<String>,
         #[serde(default, skip_serializing_if = "is_false")]
         hidden: bool,
     },
@@ -201,6 +215,7 @@ impl Fill {
             Fill::Solid { hidden, .. }
             | Fill::Linear { hidden, .. }
             | Fill::Radial { hidden, .. }
+            | Fill::Conic { hidden, .. }
             | Fill::Image { hidden, .. } => *hidden,
         }
     }
@@ -308,6 +323,9 @@ pub struct Style {
     pub blur: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub backdrop_blur: Option<f64>,
+    /// CSS filter functions besides blur, by name (`brightness`, `hue-rotate` in degrees, …).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub filters: BTreeMap<String, f64>,
     // Typography
     #[serde(skip_serializing_if = "Option::is_none")]
     pub font_family: Option<String>,
@@ -410,6 +428,7 @@ pub const STYLE_FIELDS: &[&str] = &[
     "shadows",
     "blur",
     "backdropBlur",
+    "filters",
     "fontFamily",
     "fontSize",
     "fontWeight",

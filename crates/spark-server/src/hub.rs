@@ -197,6 +197,41 @@ impl Hub {
         self.config.trash(id, &path)
     }
 
+    /// Moves a file from the recent list into a folder of the files dir (see `Config::relocate`).
+    pub fn move_to(&self, id: &str, folder: &str) -> Result<PathBuf, String> {
+        self.config.folder(folder)?;
+        let path = self.release(id)?;
+        self.config.relocate(id, &path, folder)
+    }
+
+    /// Writes a copy of a file next to the original, under a new id, and lists it as recent.
+    /// Reads the saved state through its own connection, so it works whether or not the file is open.
+    pub fn duplicate(&self, id: &str) -> Result<Value, String> {
+        let path = match self.get(id) {
+            Some(d) => d.lock().unwrap().path.clone(),
+            None => {
+                self.config.recent().into_iter().find(|f| f.id == id).ok_or("This file isn't in the recent list.")?.path
+            }
+        };
+        let (_source, mut doc) = Store::open(&path).map_err(|e| format!("can't open {}: {e}", path.display()))?;
+        doc.id = spark_core::id::new_file_id();
+        doc.name = format!("{} copy", doc.name);
+        let dest = self.config.new_file_path_in(path.parent(), &doc.name);
+        Store::create(&dest, &mut doc).map_err(|e| format!("can't write {}: {e}", dest.display()))?;
+        self.config.remember(&doc.id, &doc.name, &dest);
+        Ok(json!({"id": doc.id, "name": doc.name, "path": dest}))
+    }
+
+    /// Renames a file (its name inside the document), open or not.
+    pub fn rename(&self, id: &str, name: &str) -> Result<(), String> {
+        let doc = self.open_ref(id)?;
+        let mut d = doc.lock().unwrap();
+        let (_, ops) = crate::commands::run(&mut d, &json!({"type": "renameFile", "name": name}))?;
+        d.commit_ops(&ops);
+        self.config.remember(&d.editor.doc.id, &d.editor.doc.name, &d.path);
+        Ok(())
+    }
+
     /// Lets go of a file so it can be moved: refuses while a tab has it open or it holds edits Spark
     /// couldn't save; otherwise unloads it so its store is closed. Returns its path.
     fn release(&self, id: &str) -> Result<PathBuf, String> {

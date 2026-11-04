@@ -1,10 +1,49 @@
-import { ChevronRight, Eye, EyeOff, File, Frame, Lock, LockOpen, Minus, Plus, Square, Type, Columns2, Rows2, Shapes, Image } from "lucide-react";
-import { useEffect, useState } from "react";
+import {
+  ArrowRight,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  ChartColumn,
+  ChartLine,
+  ChartPie,
+  CircleQuestionMark,
+  Eye,
+  EyeOff,
+  File,
+  Frame,
+  Info,
+  Lock,
+  LockOpen,
+  Minus,
+  PanelLeft,
+  PenTool,
+  Plus,
+  Presentation,
+  Ruler,
+  Square,
+  SwatchBook,
+  Table,
+  Type,
+  VectorSquare,
+  X,
+  Columns2,
+  Rows2,
+  Shapes,
+  Image,
+  Images,
+} from "lucide-react";
+import * as ContextMenu from "@radix-ui/react-context-menu";
+import * as Menu from "@radix-ui/react-dropdown-menu";
+import { useEffect, useRef, useState } from "react";
 import { type DocStore, useDoc, useKids, useNode } from "../lib/doc";
-import type { NodeView } from "../lib/types";
+import { comboFor } from "../lib/keymap";
+import { setPrefs, usePrefs } from "../lib/prefs";
+import type { Agent, NodeView } from "../lib/types";
+import { CanvasMenu, Item, menuItem } from "./CanvasMenu";
+import { Keycaps, Tip } from "./Tip";
 import { TokensView } from "./inspector/Tokens";
 
-function KindIcon({ n }: { n: NodeView }) {
+export function KindIcon({ n }: { n: NodeView }) {
   const props = { size: 14, strokeWidth: 1.5, className: "shrink-0 opacity-60" };
   if (n.kind === "text") return <Type {...props} />;
   if (n.kind === "svg" || n.kind === "vector") return <Shapes {...props} />;
@@ -13,6 +52,27 @@ function KindIcon({ n }: { n: NodeView }) {
   if (n.style.display === "flex") return n.style.flexDirection?.startsWith("column") ? <Rows2 {...props} /> : <Columns2 {...props} />;
   return <Frame {...props} />;
 }
+
+/** The page icons a page can carry (the names the core accepts), as Lucide icons. */
+const PAGE_ICONS: Record<string, [typeof File, string]> = {
+  arrow: [ArrowRight, "Arrow"],
+  padlock: [Lock, "Lock"],
+  check: [Check, "Check"],
+  cross: [X, "Cross"],
+  info: [Info, "Info"],
+  question: [CircleQuestionMark, "Question"],
+  design: [PenTool, "Pen"],
+  vector: [VectorSquare, "Vector"],
+  images: [Images, "Image"],
+  table: [Table, "Table"],
+  presentation: [Presentation, "Presentation"],
+  blueprint: [Ruler, "Blueprint"],
+  swatches: [SwatchBook, "Swatches"],
+  "bar-chart": [ChartColumn, "Bar chart"],
+  "line-chart": [ChartLine, "Line chart"],
+  "pie-chart": [ChartPie, "Pie chart"],
+  page: [File, "Page"],
+};
 
 export function Rename({ value, onDone }: { value: string; onDone: (v: string | null) => void }) {
   return (
@@ -43,6 +103,8 @@ function LayerRow(props: {
   toggle: (id: string) => void;
   drag: LayerDrag;
   setDrag: (d: LayerDrag) => void;
+  /** While searching: the rows to show (matches and their ancestors). */
+  filter: Set<string> | null;
 }) {
   const { store, id, depth } = props;
   const n = useNode(store, id);
@@ -54,10 +116,10 @@ function LayerRow(props: {
     window.addEventListener("spark:rename", on);
     return () => window.removeEventListener("spark:rename", on);
   }, [id]);
-  if (!n) return null;
+  if (!n || (props.filter && !props.filter.has(id))) return null;
   const selected = store.selection.includes(id);
   const parentSelected = !selected && store.ancestors(id).some((a) => store.selection.includes(a));
-  const open = props.expanded.has(id);
+  const open = props.filter ? kids.some((k) => props.filter?.has(k)) : props.expanded.has(id);
   const canNest = n.kind === "frame" || n.kind === "svg";
   const d = props.drag;
   const marker = d && d.over === id && d.id !== id ? d.where : null;
@@ -71,7 +133,7 @@ function LayerRow(props: {
         data-layer={id}
         tabIndex={-1}
         draggable={!renaming}
-        onKeyDown={(e) => e.key === "Enter" && store.select([id])}
+        onKeyDown={(e) => e.key === "Enter" && !e.metaKey && !e.ctrlKey && store.select([id])}
         onDragStart={(e) => {
           e.dataTransfer.setData("text/plain", id);
           e.dataTransfer.effectAllowed = "move";
@@ -180,13 +242,51 @@ function LayerRow(props: {
   );
 }
 
-function Pages({ store }: { store: DocStore }) {
+type PageDrag = { id: string; over: string | null; where: "before" | "after" } | null;
+
+function Pages({ store, agents }: { store: DocStore; agents: Agent[] }) {
   useDoc(store);
+  const p = usePrefs();
   const [renaming, setRenaming] = useState<string | null>(null);
+  const [drag, setDrag] = useState<PageDrag>(null);
+  // Pages with an agent working on one of their artboards.
+  const busy = new Set<string>();
+  for (const a of agents) for (const id of a.files[store.file.id] ?? []) busy.add(store.pageOf(id) ?? store.nodes.get(id)?.parent ?? "");
+  const pageCount = store.pages.filter((x) => !x.divider).length;
+  /** Row drag handlers: pages and dividers drag to reorder. */
+  const dnd = (id: string) => ({
+    draggable: renaming !== id,
+    onDragStart: (e: React.DragEvent) => {
+      e.dataTransfer.setData("text/plain", id);
+      e.dataTransfer.effectAllowed = "move";
+      setDrag({ id, over: null, where: "after" });
+    },
+    onDragOver: (e: React.DragEvent) => {
+      if (!drag) return;
+      e.preventDefault();
+      const r = e.currentTarget.getBoundingClientRect();
+      const where = e.clientY - r.top < r.height / 2 ? "before" : "after";
+      if (drag.over !== id || drag.where !== where) setDrag({ ...drag, over: id, where });
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.preventDefault();
+      if (drag && drag.id !== id) {
+        const rest = store.pages.filter((x) => x.id !== drag.id);
+        const at = rest.findIndex((x) => x.id === id);
+        store.do({ type: "movePage", id: drag.id, index: drag.where === "before" ? at : at + 1 });
+      }
+      setDrag(null);
+    },
+    onDragEnd: () => setDrag(null),
+  });
+  const mark = (id: string) => (drag && drag.over === id && drag.id !== id ? (drag.where === "before" ? "shadow-[inset_0_2px_0_var(--spark-fg)]" : "shadow-[inset_0_-2px_0_var(--spark-fg)]") : "");
   return (
     <section aria-label="Pages" className="border-b border-line pb-1">
-      <div className="flex h-[var(--row-h)] items-center justify-between pr-1 pl-5 text-base font-medium">
-        Pages
+      <div className="flex h-[var(--row-h)] items-center justify-between pr-1 pl-2 text-base font-medium">
+        <button type="button" aria-expanded={!p.pagesCollapsed} onClick={() => setPrefs({ pagesCollapsed: !p.pagesCollapsed })} className="flex h-6 items-center gap-1 rounded-control pr-2 pl-1 hover:bg-hover">
+          {p.pagesCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+          Pages
+        </button>
         <div className="flex">
           <button type="button" aria-label="Add divider" title="Add divider" onClick={() => store.do({ type: "addPage", divider: true })} className="grid size-6 place-items-center rounded-control text-fg-3 hover:bg-hover hover:text-fg">
             <Minus size={14} />
@@ -196,67 +296,139 @@ function Pages({ store }: { store: DocStore }) {
           </button>
         </div>
       </div>
-      <ul className="max-h-[200px] overflow-auto spark-scroll">
-        {store.pages.map((p) =>
-          p.divider ? (
-            <li key={p.id} className="group flex h-3 items-center pr-3 pl-5" aria-label="Divider">
-              <div className="h-px flex-1 bg-line" />
-              <button type="button" aria-label="Delete divider" onClick={() => store.do({ type: "deletePage", id: p.id })} className="invisible ml-1 text-fg-3 group-hover:visible">
-                <Minus size={10} />
-              </button>
-            </li>
-          ) : (
-            <li key={p.id}>
-              {/* biome-ignore lint/a11y/useSemanticElements: the row holds its own rename field and delete button */}
-              <div
-                role="button"
-                tabIndex={0}
-                aria-current={store.page === p.id}
-                onClick={() => store.setPage(p.id)}
-                onKeyDown={(e) => e.key === "Enter" && store.setPage(p.id)}
-                onDoubleClick={() => setRenaming(p.id)}
-                className={`group flex h-[var(--row-h)] items-center gap-1.5 pr-3 pl-5 text-base ${store.page === p.id ? "font-medium" : "text-fg-2 hover:bg-hover"}`}
-              >
-                <File size={14} strokeWidth={1.5} className="shrink-0 opacity-60" />
-                {renaming === p.id ? (
-                  <Rename
-                    value={p.name}
-                    onDone={(v) => {
-                      setRenaming(null);
-                      if (v?.trim() && v !== p.name) store.do({ type: "setPage", id: p.id, prop: "name", value: v.trim() });
-                    }}
-                  />
-                ) : (
-                  <span className="flex-1 truncate">{p.name}</span>
-                )}
-                {store.pages.filter((x) => !x.divider).length > 1 && (
-                  <button
-                    type="button"
-                    aria-label={`Delete ${p.name}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      store.do({ type: "deletePage", id: p.id });
-                    }}
-                    className="invisible text-fg-3 group-hover:visible hover:text-fg"
-                  >
-                    <Minus size={12} />
+      {!p.pagesCollapsed && (
+        <ul className="max-h-[200px] overflow-auto spark-scroll">
+          {store.pages.map((pg) => {
+            if (pg.divider)
+              return (
+                <li key={pg.id} className={`group flex h-3 items-center pr-3 pl-5 ${mark(pg.id)}`} aria-label="Divider" {...dnd(pg.id)}>
+                  <div className="h-px flex-1 bg-line" />
+                  <button type="button" aria-label="Delete divider" onClick={() => store.do({ type: "deletePage", id: pg.id })} className="invisible ml-1 text-fg-3 group-hover:visible">
+                    <Minus size={10} />
                   </button>
-                )}
-              </div>
-            </li>
-          ),
-        )}
-      </ul>
+                </li>
+              );
+            const current = store.page === pg.id;
+            const [Icon] = PAGE_ICONS[pg.icon ?? "page"] ?? PAGE_ICONS.page;
+            return (
+              <ContextMenu.Root key={pg.id}>
+                <ContextMenu.Trigger asChild>
+                  <li className={mark(pg.id)} {...dnd(pg.id)}>
+                    {/* biome-ignore lint/a11y/useSemanticElements: the row holds its own rename field and delete button */}
+                    <div
+                      role="button"
+                      tabIndex={0}
+                      aria-current={current}
+                      onClick={() => store.setPage(pg.id)}
+                      onKeyDown={(e) => e.key === "Enter" && store.setPage(pg.id)}
+                      onDoubleClick={() => setRenaming(pg.id)}
+                      className={`group flex h-[var(--row-h)] items-center gap-1.5 pr-3 pl-5 text-base ${current ? "font-medium" : "text-fg-2 hover:bg-hover"}`}
+                    >
+                      <Icon size={14} strokeWidth={1.5} className="shrink-0 opacity-60" />
+                      {renaming === pg.id ? (
+                        <Rename
+                          value={pg.name}
+                          onDone={(v) => {
+                            setRenaming(null);
+                            if (v?.trim() && v !== pg.name) store.do({ type: "setPage", id: pg.id, prop: "name", value: v.trim() });
+                          }}
+                        />
+                      ) : (
+                        <span className="flex-1 truncate">{pg.name}</span>
+                      )}
+                      {busy.has(pg.id) && <span aria-hidden data-testid="page-busy" className="size-1.5 shrink-0 animate-pulse rounded-full bg-current" />}
+                      {current && <Check size={12} data-testid="page-current" className="shrink-0" />}
+                      {pageCount > 1 && (
+                        <button
+                          type="button"
+                          aria-label={`Delete ${pg.name}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            store.do({ type: "deletePage", id: pg.id });
+                          }}
+                          className="invisible text-fg-3 group-hover:visible hover:text-fg"
+                        >
+                          <Minus size={12} />
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                </ContextMenu.Trigger>
+                <ContextMenu.Portal>
+                  <ContextMenu.Content className="z-50 min-w-[180px] rounded-popover border border-line bg-panel p-1 shadow-popover" aria-label="Page menu" onCloseAutoFocus={(e) => e.preventDefault()}>
+                    <Item label="Rename page" onSelect={() => setRenaming(pg.id)} />
+                    <Item label="Duplicate page" onSelect={() => store.do({ type: "duplicatePage", id: pg.id })} />
+                    <Item label="Add divider" onSelect={() => store.do({ type: "addPage", divider: true, index: store.pages.indexOf(pg) + 1 })} />
+                    <ContextMenu.Sub>
+                      <ContextMenu.SubTrigger className={menuItem}>
+                        <span className="flex-1">Icon</span>
+                        <ChevronRight size={12} />
+                      </ContextMenu.SubTrigger>
+                      <ContextMenu.Portal>
+                        <ContextMenu.SubContent className="z-50 grid grid-cols-6 gap-0.5 rounded-popover border border-line bg-panel p-1 shadow-popover" aria-label="Page icons">
+                          {Object.entries(PAGE_ICONS).map(([name, [I, label]]) => (
+                            <ContextMenu.Item
+                              key={name}
+                              aria-label={label}
+                              title={label}
+                              data-active={(pg.icon ?? "page") === name}
+                              onSelect={() => store.do({ type: "setPage", id: pg.id, prop: "icon", value: name === "page" ? null : name })}
+                              className="grid size-7 cursor-default place-items-center rounded-control outline-none data-[active=true]:outline data-[active=true]:outline-1 data-[active=true]:outline-fg data-[highlighted]:bg-selected data-[highlighted]:text-selected-fg"
+                            >
+                              <I size={14} strokeWidth={1.5} />
+                            </ContextMenu.Item>
+                          ))}
+                        </ContextMenu.SubContent>
+                      </ContextMenu.Portal>
+                    </ContextMenu.Sub>
+                    <Item label="Delete page" onSelect={() => store.do({ type: "deletePage", id: pg.id })} disabled={pageCount < 2} />
+                  </ContextMenu.Content>
+                </ContextMenu.Portal>
+              </ContextMenu.Root>
+            );
+          })}
+        </ul>
+      )}
     </section>
   );
 }
 
-function FileHeader({ store }: { store: DocStore }) {
+/** Hides or shows the left panel. */
+export function SidebarButton({ className = "" }: { className?: string }) {
+  const p = usePrefs();
+  return (
+    <Tip label={p.leftHidden ? "Show sidebar" : "Hide sidebar"} side="bottom">
+      <button type="button" aria-label={p.leftHidden ? "Show sidebar" : "Hide sidebar"} onClick={() => setPrefs({ leftHidden: !p.leftHidden })} className={`grid size-6 shrink-0 place-items-center rounded-control text-fg-3 hover:bg-hover hover:text-fg ${className}`}>
+        <PanelLeft size={14} strokeWidth={1.5} />
+      </button>
+    </Tip>
+  );
+}
+
+/** File name that opens the main menu; double-click renames. */
+function FileHeader({ store, run }: { store: DocStore; run: (cmd: string) => void }) {
   useDoc(store);
+  const p = usePrefs();
   const [renaming, setRenaming] = useState(false);
+  const cmd = (label: string, name: string) => (
+    <Menu.Item className={menuItem} onSelect={() => run(name)}>
+      <span className="flex-1">{label}</span>
+      {comboFor(name) && <Keycaps combo={comboFor(name) as string} />}
+    </Menu.Item>
+  );
+  const check = (label: string, name: string, on: boolean) => (
+    <Menu.CheckboxItem checked={on} onCheckedChange={() => run(name)} onSelect={(e) => e.preventDefault()} className={menuItem}>
+      <span className="grid size-3 place-items-center">
+        <Menu.ItemIndicator>
+          <Check size={12} />
+        </Menu.ItemIndicator>
+      </span>
+      {label}
+    </Menu.CheckboxItem>
+  );
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: double-click renames; the file menu also offers rename
-    <div className="flex h-[var(--inspector-header-h)] shrink-0 items-center gap-2 border-b border-line pr-3 pl-5 text-base font-medium" onDoubleClick={() => setRenaming(true)}>
+    <div className="flex h-[var(--inspector-header-h)] shrink-0 items-center gap-1 border-b border-line pr-2 pl-3 text-base font-medium" onDoubleClick={() => setRenaming(true)}>
       {renaming ? (
         <Rename
           value={store.file.name}
@@ -266,23 +438,86 @@ function FileHeader({ store }: { store: DocStore }) {
           }}
         />
       ) : (
-        <span className="truncate" title={store.file.path}>
-          {store.file.name}
-        </span>
+        // Not modal, so a double-click on the name still reaches the header and renames.
+        <Menu.Root modal={false}>
+          <Menu.Trigger aria-label="File menu" title={store.file.path} className="flex h-6 min-w-0 items-center gap-1 rounded-control px-2 hover:bg-hover data-[state=open]:bg-hover">
+            <span className="truncate">{store.file.name}</span>
+            <ChevronDown size={12} className="shrink-0" />
+          </Menu.Trigger>
+          <Menu.Portal>
+            <Menu.Content align="start" sideOffset={4} aria-label="File menu" onCloseAutoFocus={(e) => e.preventDefault()} className="z-50 min-w-[220px] rounded-popover border border-line bg-panel p-1 shadow-popover">
+              <Menu.Item className={menuItem} onSelect={() => setRenaming(true)}>
+                Rename file
+              </Menu.Item>
+              <Menu.Item className={menuItem} onSelect={() => store.conn.request<{ id: string }>({ t: "duplicate", id: store.file.id }).then((f) => store.conn.request({ t: "reveal", ref: f.id }))}>
+                Duplicate file
+              </Menu.Item>
+              <Menu.Separator className="my-1 h-px bg-line" />
+              {cmd("Keyboard shortcuts", "app.shortcuts")}
+              {cmd("Settings", "showSettings")}
+              <Menu.Separator className="my-1 h-px bg-line" />
+              {check("Pixel grid", "togglePixelGrid", p.pixelGrid)}
+              {check("Snap to pixel", "toggleSnapPixel", p.snapPixel)}
+              {check("Layout guides", "toggleLayoutGuides", p.layoutGuides)}
+            </Menu.Content>
+          </Menu.Portal>
+        </Menu.Root>
       )}
+      <div className="flex-1" />
+      <SidebarButton />
     </div>
   );
 }
 
-export function LeftPanel({ store }: { store: DocStore }) {
+/** Rows to show while searching: matches and their ancestors, plus the first match in display order. */
+function search(store: DocStore, roots: string[], q: string) {
+  const show = new Set<string>();
+  let first: string | undefined;
+  const walk = (id: string): boolean => {
+    const self = store.nodes.get(id)?.name.toLowerCase().includes(q) ?? false;
+    if (self && !first) first = id;
+    let any = self;
+    for (const k of [...store.kids(id)].reverse()) if (walk(k)) any = true;
+    if (any) show.add(id);
+    return any;
+  };
+  for (const r of [...roots].reverse()) walk(r);
+  return { show, first };
+}
+
+export function LeftPanel({ store, menu, agents, run }: { store: DocStore; menu: Omit<React.ComponentProps<typeof CanvasMenu>, "children" | "under" | "empty">; agents: Agent[]; run: (cmd: string) => void }) {
   useDoc(store);
   const top = useKids(store, store.page);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [drag, setDrag] = useState<LayerDrag>(null);
   const [tab, setTab] = useState<"Design" | "Theme">("Design");
-  // Expand ancestors of the selection so selected layers are visible.
-  const needed = store.selection.flatMap((s) => store.ancestors(s)).filter((a) => !expanded.has(a));
+  // null: search closed.
+  const [query, setQuery] = useState<string | null>(null);
+  useEffect(() => {
+    const on = (e: Event) => {
+      const cmd = (e as CustomEvent<string>).detail;
+      if (cmd === "leftTab.design") setTab("Design");
+      if (cmd === "leftTab.theme") setTab("Theme");
+      if (cmd === "collapseLayers") setExpanded(new Set());
+      if (cmd !== "findLayers") return;
+      setTab("Design");
+      setQuery((q) => q ?? "");
+    };
+    window.addEventListener("spark:command", on);
+    return () => window.removeEventListener("spark:command", on);
+  }, []);
+  const found = query?.trim() ? search(store, top, query.trim().toLowerCase()) : null;
+  // Expand ancestors of a new selection so selected layers are visible ("Collapse all layers" keeps them closed).
+  const seen = useRef("");
+  const sig = store.selection.join(",");
+  const needed = seen.current === sig ? [] : store.selection.flatMap((s) => store.ancestors(s)).filter((a) => !expanded.has(a));
+  seen.current = sig;
   if (needed.length) setExpanded(new Set([...expanded, ...needed]));
+  useEffect(() => {
+    const on = () => setExpanded(new Set());
+    window.addEventListener("spark:collapse-layers", on);
+    return () => window.removeEventListener("spark:collapse-layers", on);
+  }, []);
   const toggle = (id: string) => {
     const next = new Set(expanded);
     if (next.has(id)) next.delete(id);
@@ -291,7 +526,7 @@ export function LeftPanel({ store }: { store: DocStore }) {
   };
   return (
     <aside className="flex w-[var(--left-w)] shrink-0 flex-col bg-panel" aria-label="Pages and layers">
-      <FileHeader store={store} />
+      <FileHeader store={store} run={run} />
       <div className="flex gap-1 border-b border-line px-3 py-2">
         {(["Design", "Theme"] as const).map((t) => (
           <button
@@ -311,13 +546,44 @@ export function LeftPanel({ store }: { store: DocStore }) {
         </div>
       ) : (
         <>
-          <Pages store={store} />
+          <Pages store={store} agents={agents} />
           <div className="flex h-[var(--row-h)] items-center px-5 text-base font-medium">Layers</div>
-          <div role="tree" aria-label="Layers" className="min-h-0 flex-1 overflow-auto pb-4 spark-scroll">
-            {[...top].reverse().map((id) => (
-              <LayerRow key={id} store={store} id={id} depth={0} expanded={expanded} toggle={toggle} drag={drag} setDrag={setDrag} />
-            ))}
-          </div>
+          {query !== null && (
+            <div className="px-3 pb-1.5">
+              <input
+                // biome-ignore lint/a11y/noAutofocus: the search field takes focus when it opens
+                autoFocus
+                aria-label="Search layers"
+                placeholder="Search layers"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onFocus={(e) => e.currentTarget.select()}
+                onKeyDown={(e) => {
+                  e.stopPropagation();
+                  if (e.key === "Escape") setQuery(null);
+                  if (e.key === "Enter" && found?.first) store.select([found.first]);
+                }}
+                className="h-6 w-full rounded-control bg-control px-2 text-sm outline-none focus:outline focus:outline-1 focus:outline-fg"
+              />
+            </div>
+          )}
+          <CanvasMenu {...menu}>
+            <div
+              role="tree"
+              aria-label="Layers"
+              className="min-h-0 flex-1 overflow-auto pb-4 spark-scroll"
+              onContextMenu={(e) => {
+                // Right-clicking a row selects it unless it's already selected; elsewhere there is no menu.
+                const id = (e.target as HTMLElement).closest("[data-layer]")?.getAttribute("data-layer");
+                if (!id) return e.preventDefault();
+                if (!store.selection.includes(id)) store.select([id]);
+              }}
+            >
+              {[...top].reverse().map((id) => (
+                <LayerRow key={id} store={store} id={id} depth={0} expanded={expanded} toggle={toggle} drag={drag} setDrag={setDrag} filter={found?.show ?? null} />
+              ))}
+            </div>
+          </CanvasMenu>
         </>
       )}
     </aside>

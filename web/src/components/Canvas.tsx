@@ -1,32 +1,44 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { type DocStore, pendingReveal, tokenVars, useDoc } from "../lib/doc";
 import { loadFonts } from "../lib/fonts";
 import {
   type Camera,
   type Handle,
   HANDLES,
+  MAX_ZOOM,
+  angleDeg,
   fitRect,
   fromPoints,
   handlePoint,
   intersects,
+  normalizeAngle,
   rectToScreen,
   resizeRect,
+  toLocal,
+  toScreen,
   toWorld,
   union,
   zoomAt,
 } from "../lib/geometry";
+import { prefs } from "../lib/prefs";
 import type { Rect } from "../lib/types";
+import { getView, onViewChange } from "../lib/view";
+import { FLEX_PROP, type FlexKey, type Paint, badge, drawFlex, drawLayoutGuides, drawMeasure, drawPixelGrid, flexBox, flexHandles, isFlex } from "./canvasOverlays";
+import { Rename } from "./LeftPanel";
 import { ElementRegistry, LevelOfDetail, PageContent } from "./NodeTree";
 import type { Tool } from "./Toolbar";
 
 export type Guide = { x1: number; y1: number; x2: number; y2: number; dashed?: boolean };
 
 type Drag =
-  | { kind: "pan"; sx: number; sy: number; cam: Camera }
+  | { kind: "pan"; sx: number; sy: number; cam: Camera; right?: boolean }
   | { kind: "marquee"; sx: number; sy: number; scope: string; base: string[] }
   | { kind: "move"; sx: number; sy: number; started: boolean; alt: boolean; click: string | null }
   | { kind: "resize"; handle: Handle; sx: number; sy: number; start: Rect }
-  | { kind: "draw"; tool: Tool; wx: number; wy: number; parent: string };
+  | { kind: "draw"; tool: Tool; wx: number; wy: number; parent: string }
+  | { kind: "flex"; id: string; key: FlexKey; sx: number; sy: number; start: number }
+  | { kind: "rotate"; id: string; c: { x: number; y: number }; a0: number; start: number }
+  | { kind: "zoom"; sx: number; sy: number; alt: boolean };
 
 export type CanvasApi = {
   zoomTo: (r: Rect | null) => void;
@@ -41,6 +53,12 @@ export type CanvasApi = {
 };
 
 const LABEL_H = 18;
+/** How far outside a selected node's corner (screen px) a drag rotates it. */
+const ROTATE_ZONE = 18;
+const ROTATE_ARROW = '<path d="M19 12a7 7 0 1 1-2.1-5"/><path d="M19.5 3v4.5H15"/>';
+const ROTATE_CURSOR = `url("data:image/svg+xml,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round"><g stroke="#fff" stroke-width="4.5">${ROTATE_ARROW}</g><g stroke="#000" stroke-width="2">${ROTATE_ARROW}</g></svg>`,
+)}") 12 12, crosshair`;
 /** Artboards smaller than this on screen render as shells (no contents). */
 const PREVIEW_PX = 32;
 /** Artboards whose contents mount per level-of-detail pass (mounting is the costly part of a frame). */
@@ -93,8 +111,34 @@ export function Canvas(props: {
     size: { w: 0, h: 0 },
     fitted: false,
     editing: null as string | null,
+    /** Alt-measure target, held keys and the last pointer position (client coordinates). */
+    measure: null as string | null,
+    alt: false,
+    z: false,
+    pointer: null as { x: number; y: number } | null,
   });
+  const [renaming, setRenaming] = useState<{ id: string; r: Rect } | null>(null);
   const frame = useRef(0);
+  /** Lets a right-click through to the context menu when right-drag panning holds back the native event. */
+  const menuOk = useRef(false);
+
+  /** The flex frame whose padding and gap handles are live: the selected one, else the hovered one. */
+  const flexTarget = (): string | null => {
+    const one = store.selection.length === 1 ? store.selection[0] : null;
+    const id = isFlex(store, one) ? one : isFlex(store, store.hover) ? store.hover : null;
+    return id && !store.nodes.get(id)?.locked ? id : null;
+  };
+
+  /** A turned node's own box (unturned size, world centre); measured rects only hold its bounding box. */
+  const rotBox = (id: string) => {
+    const deg = store.nodes.get(id)?.style.rotate;
+    const el = reg.get(id);
+    const r = store.rects.get(id);
+    if (!deg || !r || !(el instanceof HTMLElement)) return null;
+    const cs = getComputedStyle(el);
+    const [w, h] = [Number.parseFloat(cs.width), Number.parseFloat(cs.height)];
+    return Number.isFinite(w) && Number.isFinite(h) ? { c: { x: r.x + r.w / 2, y: r.y + r.h / 2 }, w, h, deg } : null;
+  };
 
   // ---- drawing -------------------------------------------------------------
   const sweeps = useMemo(() => new Map<string, { at: number; write: boolean }>(), []);
@@ -132,6 +176,10 @@ export function Canvas(props: {
       ctx.strokeRect(Math.round(r.x) + 0.5, Math.round(r.y) + 0.5, Math.round(r.w), Math.round(r.h));
       ctx.setLineDash([]);
     };
+    const paint: Paint = { ctx, cam, w, h, fg, halo };
+    const view = getView();
+    if (view.pixelGrid) drawPixelGrid(paint);
+    if (view.layoutGuides) drawLayoutGuides(paint, store);
     // Artboard labels.
     ctx.font = "11px Geist, sans-serif";
     ctx.textBaseline = "bottom";
@@ -154,7 +202,7 @@ export function Canvas(props: {
       // Agent activity: a falling-dot band along the top edge of artboards an agent is working on.
       const since = props.agentBoards?.get(id);
       if (since !== undefined) {
-        const t = performance.now() / 1000;
+        const t = prefs().reduceMotion ? 0 : performance.now() / 1000;
         const cols = 32;
         const pitch = 6;
         const right = s.x + s.w;
@@ -204,11 +252,30 @@ export function Canvas(props: {
       const r = store.rects.get(hover);
       if (r) outline(rectToScreen(cam, r));
     }
+    // Flex frames: padding and gap areas, dashed children and (for the one in reach) drag handles.
+    const flexOn = new Set([...store.selection.slice(0, 20), store.hover].filter((id): id is string => isFlex(store, id)));
+    const handled = flexTarget();
+    for (const id of flexOn) {
+      const b = flexBox(store, reg, id);
+      if (b) drawFlex(paint, b, id === handled && !ui.current.editing);
+    }
     // Selection and handles.
     const sel = store.selection.map((id) => store.rects.get(id)).filter((r): r is Rect => !!r);
-    for (const r of sel) outline(rectToScreen(cam, r));
+    const rot = store.selection.length === 1 ? rotBox(store.selection[0]) : null;
+    if (!rot) for (const r of sel) outline(rectToScreen(cam, r));
     const u = union(sel);
-    if (u && !ui.current.editing) {
+    if (rot && !ui.current.editing) {
+      // A turned node: outline and size badge turn with it.
+      const c = toScreen(cam, rot.c.x, rot.c.y);
+      const hw = (rot.w * cam.zoom) / 2;
+      const hh = (rot.h * cam.zoom) / 2;
+      ctx.save();
+      ctx.translate(c.x, c.y);
+      ctx.rotate((rot.deg * Math.PI) / 180);
+      outline({ x: -hw, y: -hh, w: 2 * hw, h: 2 * hh });
+      badge(paint, `${Math.round(rot.w)} × ${Math.round(rot.h)}`, 0, hh + 13.5);
+      ctx.restore();
+    } else if (u && !ui.current.editing) {
       const s = rectToScreen(cam, u);
       if (sel.length > 1) outline(s, 1, [4, 3]);
       const locked = store.selection.some((id) => store.nodes.get(id)?.locked);
@@ -222,19 +289,13 @@ export function Canvas(props: {
           ctx.strokeRect(Math.round(p.x) - 3.5, Math.round(p.y) - 3.5, 7, 7);
         }
       }
-      // Size badge.
-      const label = `${Math.round(u.w)} × ${Math.round(u.h)}`;
-      ctx.font = "10px 'Geist Mono', monospace";
-      const tw = ctx.measureText(label).width + 8;
-      const bx = s.x + s.w / 2 - tw / 2;
-      const by = s.y + s.h + 6;
-      ctx.fillStyle = fg;
-      ctx.beginPath();
-      ctx.roundRect(bx, by, tw, 15, 3);
-      ctx.fill();
-      ctx.fillStyle = halo;
-      ctx.textBaseline = "middle";
-      ctx.fillText(label, bx + 4, by + 8);
+      badge(paint, `${Math.round(u.w)} × ${Math.round(u.h)}`, s.x + s.w / 2, s.y + s.h + 13.5);
+    }
+    // Alt held: distances from the selection to what the pointer is over.
+    const target = ui.current.alt && ui.current.measure ? store.rects.get(ui.current.measure) : undefined;
+    if (target && u) {
+      outline(rectToScreen(cam, target), 1, [4, 3]);
+      drawMeasure(paint, u, target);
     }
     // Marquee and draw preview.
     for (const r of [ui.current.marquee, ui.current.preview ? rectToScreen(cam, ui.current.preview) : null]) {
@@ -256,7 +317,7 @@ export function Canvas(props: {
       ctx.stroke();
       ctx.setLineDash([]);
     }
-    if (sweeps.size || props.agentBoards?.size) requestDraw();
+    if ((sweeps.size || props.agentBoards?.size) && !prefs().reduceMotion) requestDraw();
   };
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: redraw when agent activity changes
@@ -264,15 +325,65 @@ export function Canvas(props: {
 
   useEffect(() => {
     window.addEventListener("spark:theme", requestDraw);
-    return () => window.removeEventListener("spark:theme", requestDraw);
+    const off = onViewChange(requestDraw);
+    return () => {
+      window.removeEventListener("spark:theme", requestDraw);
+      off();
+    };
   }, [requestDraw]);
+
+  // Held keys: Alt measures, Z is the zoom brush.
+  const syncCursor = () => {
+    if (vp.current && !drag.current) vp.current.style.cursor = ui.current.z ? (ui.current.alt ? "zoom-out" : "zoom-in") : "";
+  };
+  const updateMeasure = () => {
+    const u = ui.current;
+    let next: string | null = null;
+    const raw = u.alt && u.pointer && store.selection.length && !drag.current && tool === "move" ? hitAt(u.pointer.x, u.pointer.y) : null;
+    if (raw) {
+      // The node under the pointer; over the selection itself (or inside it), its parent.
+      const chain = [raw, ...store.ancestors(raw)];
+      const i = chain.findIndex((c) => store.selection.includes(c));
+      next = i < 0 ? raw : (chain[i + 1] ?? null);
+    }
+    if (next !== u.measure) {
+      u.measure = next;
+      requestDraw();
+    }
+  };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const down = e.type === "keydown";
+      const el = e.target as HTMLElement | null;
+      const typing = !!el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
+      if (e.key === "Alt") {
+        ui.current.alt = down;
+        updateMeasure();
+      }
+      if (e.code === "KeyZ" && !(down && (typing || e.metaKey || e.ctrlKey))) ui.current.z = down;
+      syncCursor();
+    };
+    const reset = () => {
+      ui.current.alt = ui.current.z = false;
+      updateMeasure();
+      syncCursor();
+    };
+    window.addEventListener("keydown", onKey);
+    window.addEventListener("keyup", onKey);
+    window.addEventListener("blur", reset);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keyup", onKey);
+      window.removeEventListener("blur", reset);
+    };
+  });
 
   // Agent activity sweeps arrive as DOM events from the app.
   useEffect(() => {
     const on = (e: Event) => {
       const d = (e as CustomEvent<{ file: string; ids: string[]; write: boolean }>).detail;
       if (d.file !== store.file.id) return;
-      for (const id of d.ids) sweeps.set(id, { at: performance.now(), write: d.write });
+      if (!prefs().reduceMotion) for (const id of d.ids) sweeps.set(id, { at: performance.now(), write: d.write });
       requestDraw();
     };
     window.addEventListener("spark:sweep", on);
@@ -517,13 +628,23 @@ export function Canvas(props: {
     return () => ro.disconnect();
   }, [updateDetail, requestDraw]);
 
+  /** Screen point zooming holds still: the selection's center when "zoom centers on selection" is on. */
+  const zoomFocus = useCallback(() => {
+    const u = prefs().zoomToSelection ? union(store.selection.map((id) => store.rects.get(id)).filter((r): r is Rect => !!r)) : null;
+    const cam = camTarget.current;
+    return u ? { x: (u.x + u.w / 2) * cam.zoom + cam.x, y: (u.y + u.h / 2) * cam.zoom + cam.y } : null;
+  }, [store]);
+
   const api: CanvasApi = {
     zoomTo: (r) => {
       if (!r) return;
       const { w, h } = ui.current.size;
       setCam(fitRect(r, w, h, 64, 1));
     },
-    zoomBy: (f) => setCam(zoomAt(camTarget.current, f, ui.current.size.w / 2, ui.current.size.h / 2)),
+    zoomBy: (f) => {
+      const at = zoomFocus() ?? { x: ui.current.size.w / 2, y: ui.current.size.h / 2 };
+      setCam(zoomAt(camTarget.current, f, at.x, at.y));
+    },
     zoom100: () => setCam(zoomAt(camTarget.current, 1 / camTarget.current.zoom, ui.current.size.w / 2, ui.current.size.h / 2)),
     panBy: (dx, dy) => setCam({ ...camTarget.current, x: camTarget.current.x + dx, y: camTarget.current.y + dy }),
     editText: (id) => startEditing(id),
@@ -540,9 +661,13 @@ export function Canvas(props: {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const r = v.getBoundingClientRect();
-      if (e.ctrlKey || e.metaKey) {
-        const f = Math.exp(-e.deltaY * (e.deltaMode === 1 ? 0.05 : 0.01));
-        moveCam(zoomAt(camTarget.current, f, e.clientX - r.left, e.clientY - r.top), true);
+      const p = prefs();
+      if (e.ctrlKey || e.metaKey || p.wheelZooms) {
+        // Pinch gestures arrive as ctrl+wheel; a plain wheel zooms more gently.
+        const rate = e.ctrlKey || e.metaKey ? 0.01 : 0.003;
+        const f = Math.exp(-e.deltaY * (e.deltaMode === 1 ? rate * 5 : rate) * (p.invertZoom ? -1 : 1));
+        const at = zoomFocus() ?? { x: e.clientX - r.left, y: e.clientY - r.top };
+        moveCam(zoomAt(camTarget.current, f, at.x, at.y), true);
       } else {
         const k = e.deltaMode === 1 ? 16 : 1;
         const dx = e.shiftKey && !e.deltaX ? e.deltaY : e.deltaX;
@@ -552,7 +677,7 @@ export function Canvas(props: {
     };
     v.addEventListener("wheel", onWheel, { passive: false });
     return () => v.removeEventListener("wheel", onWheel);
-  }, [moveCam]);
+  }, [moveCam, zoomFocus]);
 
   // ---- hit testing ---------------------------------------------------------
   const local = (e: { clientX: number; clientY: number }) => {
@@ -568,6 +693,9 @@ export function Canvas(props: {
     }
     return null;
   };
+
+  /** Deep select: Mod flips whatever the "select deepest layer by default" preference says. */
+  const deepOf = (e: { metaKey: boolean; ctrlKey: boolean }) => (e.metaKey || e.ctrlKey) !== prefs().deepSelect;
 
   /** The node a click selects: same depth as the current selection, else the artboard's child. */
   const selectable = (id: string | null, deep: boolean): string | null => {
@@ -614,6 +742,8 @@ export function Canvas(props: {
 
   const handleAt = (p: { x: number; y: number }): Handle | null => {
     if (store.selection.some((id) => store.nodes.get(id)?.locked)) return null;
+    // A turned node resizes from the inspector; its outline has no handles.
+    if (store.selection.length === 1 && rotBox(store.selection[0])) return null;
     const u = liveSelection();
     if (!u) return null;
     const s = rectToScreen(camRef.current, u);
@@ -622,6 +752,31 @@ export function Canvas(props: {
       if (Math.abs(hp.x - p.x) <= 6 && Math.abs(hp.y - p.y) <= 6) return hd;
     }
     return null;
+  };
+
+  /** The selected node when the pointer is just outside one of its corners (where a drag rotates it). */
+  const rotateAt = (p: { x: number; y: number }): { id: string; c: { x: number; y: number }; deg: number } | null => {
+    if (store.selection.length !== 1 || ui.current.editing) return null;
+    const id = store.selection[0];
+    const n = store.nodes.get(id);
+    const r = store.rects.get(id);
+    if (!n || !r || n.locked || store.ancestors(id).some((a) => store.nodes.get(a)?.locked)) return null;
+    const cam = camRef.current;
+    const box = rotBox(id);
+    const c = toScreen(cam, r.x + r.w / 2, r.y + r.h / 2);
+    const q = toLocal(c, box?.deg ?? 0, p);
+    const dx = Math.abs(q.x) - ((box?.w ?? r.w) * cam.zoom) / 2;
+    const dy = Math.abs(q.y) - ((box?.h ?? r.h) * cam.zoom) / 2;
+    return dx > 0 && dy > 0 && dx < ROTATE_ZONE && dy < ROTATE_ZONE ? { id, c, deg: box?.deg ?? 0 } : null;
+  };
+
+  /** A flex handle under the pointer: a padding side or a gap. */
+  const flexAt = (p: { x: number; y: number }): { id: string; key: FlexKey; start: number } | null => {
+    const id = flexTarget();
+    const b = id && !ui.current.editing ? flexBox(store, reg, id) : null;
+    if (!id || !b) return null;
+    const hit = flexHandles(b, camRef.current).find((h) => Math.abs(p.x - h.x) <= h.w / 2 + 3 && Math.abs(p.y - h.y) <= h.h / 2 + 3);
+    return hit ? { id, key: hit.key, start: hit.key === "gap" ? b.gap : b.pad[["pt", "pr", "pb", "pl"].indexOf(hit.key)] } : null;
   };
 
   // ---- text editing --------------------------------------------------------
@@ -673,23 +828,29 @@ export function Canvas(props: {
   // ---- pointer -------------------------------------------------------------
   const pendingDrag = useRef<{ dx: number; dy: number; x: number; y: number; snap: boolean } | null>(null);
   const pendingResize = useRef<Rect | null>(null);
+  const pendingStyle = useRef<{ id: string; styles: Record<string, string | number | null> } | null>(null);
   const sending = useRef(false);
   const snapOff = useRef(false);
   const flush = useCallback(async () => {
     if (sending.current) return;
     sending.current = true;
     try {
-      while (pendingDrag.current || pendingResize.current) {
+      while (pendingDrag.current || pendingResize.current || pendingStyle.current) {
+        if (pendingStyle.current) {
+          const { id, styles } = pendingStyle.current;
+          pendingStyle.current = null;
+          await store.do({ type: "setStyle", ids: [id], styles }).catch(() => null);
+        }
         if (pendingDrag.current) {
           const d = pendingDrag.current;
           pendingDrag.current = null;
-          const r = await store.do<{ guides: Guide[] }>({ type: "drag", ...d, zoom: camRef.current.zoom }).catch(() => null);
+          const r = await store.do<{ guides: Guide[] }>({ type: "drag", ...d, pixel: getView().snapPixel, zoom: camRef.current.zoom }).catch(() => null);
           ui.current.guides = r?.guides ?? [];
         }
         if (pendingResize.current) {
           const rect = pendingResize.current;
           pendingResize.current = null;
-          const r = await store.do<{ guides: Guide[] }>({ type: "resize", rect, snap: !snapOff.current, zoom: camRef.current.zoom }).catch(() => null);
+          const r = await store.do<{ guides: Guide[] }>({ type: "resize", rect, snap: !snapOff.current, pixel: getView().snapPixel, zoom: camRef.current.zoom }).catch(() => null);
           ui.current.guides = r?.guides ?? [];
         }
         requestDraw();
@@ -709,8 +870,18 @@ export function Canvas(props: {
       v?.setPointerCapture(e.pointerId);
       return;
     }
+    if (e.button === 2 && prefs().rightDragPans) {
+      drag.current = { kind: "pan", sx: e.clientX, sy: e.clientY, cam: camRef.current, right: true };
+      v?.setPointerCapture(e.pointerId);
+      return;
+    }
+    if (ui.current.z && e.button === 0) {
+      drag.current = { kind: "zoom", sx: p.x, sy: p.y, alt: e.altKey };
+      v?.setPointerCapture(e.pointerId);
+      return;
+    }
     if (e.button === 2) {
-      const hit = selectable(hitAt(e.clientX, e.clientY), e.metaKey || e.ctrlKey);
+      const hit = selectable(hitAt(e.clientX, e.clientY), deepOf(e));
       if (hit && !store.selection.includes(hit)) store.select([hit]);
       return;
     }
@@ -731,8 +902,21 @@ export function Canvas(props: {
         return;
       }
     }
+    const fx = flexAt(p);
+    if (fx) {
+      drag.current = { kind: "flex", ...fx, sx: p.x, sy: p.y };
+      store.do({ type: "begin" });
+      return;
+    }
+    const rt = rotateAt(p);
+    if (rt) {
+      drag.current = { kind: "rotate", id: rt.id, c: rt.c, a0: angleDeg(rt.c, p), start: rt.deg };
+      store.do({ type: "begin" });
+      if (v) v.style.cursor = ROTATE_CURSOR;
+      return;
+    }
     const label = ui.current.labels.find((l) => p.x >= l.r.x && p.x <= l.r.x + l.r.w && p.y >= l.r.y && p.y <= l.r.y + l.r.h);
-    const hit = label && !store.nodes.get(label.id)?.locked ? label.id : selectable(hitAt(e.clientX, e.clientY), e.metaKey || e.ctrlKey);
+    const hit = label && !store.nodes.get(label.id)?.locked ? label.id : selectable(hitAt(e.clientX, e.clientY), deepOf(e));
     if (e.shiftKey && hit) {
       store.select(store.selection.includes(hit) ? store.selection.filter((s) => s !== hit) : [...store.selection, hit]);
       return;
@@ -759,10 +943,13 @@ export function Canvas(props: {
   const onPointerMove = (e: React.PointerEvent) => {
     const p = local(e);
     const d = drag.current;
+    ui.current.pointer = { x: e.clientX, y: e.clientY };
+    if (ui.current.alt !== e.altKey) ui.current.alt = e.altKey;
     if (!d) {
       if (ui.current.editing || tool !== "move") return;
+      updateMeasure();
       const label = ui.current.labels.find((l) => p.x >= l.r.x && p.x <= l.r.x + l.r.w && p.y >= l.r.y && p.y <= l.r.y + l.r.h);
-      const hover = label ? label.id : selectable(hitAt(e.clientX, e.clientY), e.metaKey || e.ctrlKey);
+      const hover = label ? label.id : selectable(hitAt(e.clientX, e.clientY), deepOf(e));
       if (hover !== store.hover) {
         // Only the HUD shows canvas hover; a full emit would re-render every document subscriber.
         store.hover = hover;
@@ -770,7 +957,24 @@ export function Canvas(props: {
       }
       const v = vp.current;
       const hd = handleAt(p);
-      if (v) v.style.cursor = hd ? (hd === "n" || hd === "s" ? "ns-resize" : hd === "e" || hd === "w" ? "ew-resize" : hd === "nw" || hd === "se" ? "nwse-resize" : "nesw-resize") : "";
+      const fx = flexAt(p);
+      if (v && !ui.current.z) {
+        v.style.cursor = hd
+          ? hd === "n" || hd === "s"
+            ? "ns-resize"
+            : hd === "e" || hd === "w"
+              ? "ew-resize"
+              : hd === "nw" || hd === "se"
+                ? "nwse-resize"
+                : "nesw-resize"
+          : fx
+            ? fx.key === "pt" || fx.key === "pb" || (fx.key === "gap" && !flexBox(store, reg, fx.id)?.row)
+              ? "ns-resize"
+              : "ew-resize"
+            : rotateAt(p)
+              ? ROTATE_CURSOR
+              : "";
+      }
       return;
     }
     const cam = camRef.current;
@@ -804,6 +1008,20 @@ export function Canvas(props: {
       snapOff.current = e.metaKey || e.ctrlKey || e.shiftKey || e.altKey;
       pendingResize.current = r;
       flush();
+    } else if (d.kind === "flex") {
+      const b = flexBox(store, reg, d.id);
+      const horizontal = d.key === "pl" || d.key === "pr" || (d.key === "gap" && b?.row);
+      const delta = (horizontal ? p.x - d.sx : p.y - d.sy) / cam.zoom;
+      const value = Math.max(0, d.start + (d.key === "pb" || d.key === "pr" ? -delta : delta));
+      pendingStyle.current = { id: d.id, styles: { [FLEX_PROP[d.key]]: getView().snapPixel ? Math.round(value) : Math.round(value * 100) / 100 } };
+      flush();
+    } else if (d.kind === "rotate") {
+      const deg = Math.round(normalizeAngle(d.start + angleDeg(d.c, p) - d.a0, e.shiftKey ? 15 : 0) * 100) / 100;
+      pendingStyle.current = { id: d.id, styles: { rotate: deg ? `${deg}deg` : null } };
+      flush();
+    } else if (d.kind === "zoom") {
+      ui.current.marquee = fromPoints(d.sx, d.sy, p.x, p.y);
+      requestDraw();
     } else if (d.kind === "draw") {
       const w = toWorld(cam, p.x, p.y);
       let r = fromPoints(d.wx, d.wy, w.x, w.y);
@@ -821,6 +1039,14 @@ export function Canvas(props: {
     drag.current = null;
     vp.current?.releasePointerCapture?.(e.pointerId);
     if (!d) return;
+    if (d.kind === "pan" && d.right && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 4) {
+      // A right-click that didn't drag opens the menu; the browser's own event was held back.
+      const hit = selectable(hitAt(e.clientX, e.clientY), deepOf(e));
+      if (hit && !store.selection.includes(hit)) store.select([hit]);
+      menuOk.current = true;
+      vp.current?.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: e.clientX, clientY: e.clientY }));
+      menuOk.current = false;
+    }
     if (d.kind === "marquee") {
       ui.current.marquee = null;
       requestDraw();
@@ -837,6 +1063,18 @@ export function Canvas(props: {
       while (sending.current || pendingResize.current) await new Promise((r) => setTimeout(r, 4));
       await store.do({ type: "resizeEnd" });
       ui.current.guides = [];
+      requestDraw();
+    } else if (d.kind === "flex" || d.kind === "rotate") {
+      while (sending.current || pendingStyle.current) await new Promise((r) => setTimeout(r, 4));
+      await store.do({ type: "commit" });
+      syncCursor();
+    } else if (d.kind === "zoom") {
+      const m = ui.current.marquee;
+      ui.current.marquee = null;
+      const cam = camRef.current;
+      const { w, h } = ui.current.size;
+      if (m && m.w + m.h > 8) moveCam(fitRect({ x: (m.x - cam.x) / cam.zoom, y: (m.y - cam.y) / cam.zoom, w: m.w / cam.zoom, h: m.h / cam.zoom }, w, h, 0, MAX_ZOOM), true);
+      else moveCam(zoomAt(camTarget.current, d.alt ? 0.5 : 2, d.sx, d.sy), true);
       requestDraw();
     } else if (d.kind === "draw") {
       const r = ui.current.preview;
@@ -863,6 +1101,9 @@ export function Canvas(props: {
 
   const onDoubleClick = (e: React.MouseEvent) => {
     if (tool !== "move" || ui.current.editing) return;
+    const p = local(e);
+    const label = ui.current.labels.find((l) => p.x >= l.r.x && p.x <= l.r.x + l.r.w && p.y >= l.r.y && p.y <= l.r.y + l.r.h);
+    if (label && !store.nodes.get(label.id)?.locked) return setRenaming(label);
     const raw = hitAt(e.clientX, e.clientY);
     if (!raw) return;
     const chain = [raw, ...store.ancestors(raw)];
@@ -899,7 +1140,10 @@ export function Canvas(props: {
           }
         }}
         onDoubleClick={onDoubleClick}
-        onContextMenu={props.onContextMenu}
+        onContextMenu={(e) => {
+          if (prefs().rightDragPans && !menuOk.current) e.preventDefault();
+          else props.onContextMenu?.(e);
+        }}
       >
         <div ref={camEl} className="spark-camera" data-testid="camera">
           <LevelOfDetail.Provider value={true}>
@@ -907,6 +1151,17 @@ export function Canvas(props: {
           </LevelOfDetail.Provider>
         </div>
         <canvas ref={hud} className="pointer-events-none absolute inset-0 size-full" data-testid="hud" />
+        {renaming && (
+          <div className="absolute z-10 flex" style={{ left: renaming.r.x - 4, top: renaming.r.y - 1, width: Math.max(renaming.r.w + 24, 140) }}>
+            <Rename
+              value={store.nodes.get(renaming.id)?.name ?? ""}
+              onDone={(v) => {
+                setRenaming(null);
+                if (v?.trim() && v !== store.nodes.get(renaming.id)?.name) store.do({ type: "set", ids: [renaming.id], prop: "name", value: v.trim() });
+              }}
+            />
+          </div>
+        )}
       </div>
     </ElementRegistry.Provider>
   );

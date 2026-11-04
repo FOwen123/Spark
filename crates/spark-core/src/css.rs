@@ -1,5 +1,7 @@
 //! CSS in and out: parse declarations into a [`Style`] and compile a node's style to CSS.
 
+use std::collections::BTreeMap;
+
 use crate::{
     color::Color,
     node::{Node, NodeKind},
@@ -180,21 +182,47 @@ fn stops(args: &[&str]) -> Option<Vec<Stop>> {
     )
 }
 
+/// Splits an optional ` in <space>` suffix off a gradient's first argument.
+fn split_space(arg: &str) -> (&str, Option<String>) {
+    match arg.split_once(" in ") {
+        Some((head, space)) if matches!(space.trim(), "srgb" | "oklab" | "oklch") => {
+            (head.trim(), Some(space.trim().to_string()))
+        }
+        _ => (arg.trim(), None),
+    }
+}
+
 /// Parses one background layer (gradient or `/assets/<hash>` image) into a fill.
 pub fn parse_fill_layer(layer: &str) -> Option<Fill> {
     let l = layer.trim();
     if let Some(inner) = l.strip_prefix("linear-gradient(").and_then(|r| r.strip_suffix(')')) {
         let args = split_top(inner, ',');
-        let (a, rest) = match angle(args.first()?) {
+        let (head, space) = split_space(args.first()?);
+        let (a, rest) = match angle(head) {
             Some(a) => (a, &args[1..]),
+            None if space.is_some() && head.is_empty() => (180.0, &args[1..]),
             None => (180.0, &args[..]),
         };
-        return Some(Fill::Linear { angle: a, stops: stops(rest)?, hidden: false });
+        return Some(Fill::Linear { angle: a, stops: stops(rest)?, space, hidden: false });
     }
     if let Some(inner) = l.strip_prefix("radial-gradient(").and_then(|r| r.strip_suffix(')')) {
         let args = split_top(inner, ',');
-        let rest = if args.first()?.parse::<Color>().is_ok() { &args[..] } else { &args[1..] };
-        return Some(Fill::Radial { stops: stops(rest)?, hidden: false });
+        let (head, space) = split_space(args.first()?);
+        let rest = if head.parse::<Color>().is_ok() { &args[..] } else { &args[1..] };
+        return Some(Fill::Radial { stops: stops(rest)?, space, hidden: false });
+    }
+    if let Some(inner) = l.strip_prefix("conic-gradient(").and_then(|r| r.strip_suffix(')')) {
+        let args = split_top(inner, ',');
+        let (head, space) = split_space(args.first()?);
+        if head.parse::<Color>().is_ok() {
+            return Some(Fill::Conic { angle: 0.0, stops: stops(&args)?, space, hidden: false });
+        }
+        let a = match head.strip_prefix("from ") {
+            Some(f) => angle(f.split(" at ").next()?)?,
+            None if head.starts_with("at ") || head.is_empty() => 0.0,
+            None => return None,
+        };
+        return Some(Fill::Conic { angle: a, stops: stops(&args[1..])?, space, hidden: false });
     }
     let url = l.strip_prefix("url(")?.strip_suffix(')')?.trim().trim_matches(['"', '\'']);
     let hash = url.strip_prefix("/assets/")?;
@@ -253,6 +281,35 @@ fn parse_border(v: &str) -> Option<(f64, String, Color)> {
 fn single_filter(v: &str, name: &str) -> Option<f64> {
     let inner = v.trim().strip_prefix(name)?.strip_prefix('(')?.strip_suffix(')')?;
     px_of(inner)
+}
+
+/// Filter functions Spark models besides blur.
+const FILTERS: [&str; 7] = ["brightness", "contrast", "grayscale", "hue-rotate", "invert", "saturate", "sepia"];
+
+/// A `filter` list made only of blur and [`FILTERS`] functions, as (blur, others).
+fn parse_filters(v: &str) -> Option<(Option<f64>, BTreeMap<String, f64>)> {
+    let (mut blur, mut out) = (None, BTreeMap::new());
+    for f in words(v) {
+        let (name, rest) = f.split_once('(')?;
+        let arg = rest.strip_suffix(')')?.trim();
+        if name == "blur" {
+            blur = Some(px_of(arg)?);
+        } else if FILTERS.contains(&name) {
+            let n = if name == "hue-rotate" {
+                angle(arg)?
+            } else {
+                match len(arg)? {
+                    Len::Pct(p) => p / 100.0,
+                    Len::Px(n) | Len::Num(n) => n,
+                    _ => return None,
+                }
+            };
+            out.insert(name.to_string(), n);
+        } else {
+            return None;
+        }
+    }
+    Some((blur, out))
 }
 
 fn side_index(s: &str) -> Option<usize> {
@@ -508,9 +565,9 @@ pub fn apply_decl(style: &mut Style, prop: &str, value: &str) -> Result<(), Stri
                 split_top(value, ',').into_iter().map(parse_shadow).collect::<Option<_>>().ok_or_else(bad)?
             }
         }
-        "filter" => match single_filter(value, "blur") {
-            Some(b) => style.blur = Some(b),
-            None if value == "none" => style.blur = None,
+        "filter" => match parse_filters(value) {
+            Some((blur, filters)) => (style.blur, style.filters) = (blur, filters),
+            None if value == "none" => (style.blur, style.filters) = (None, BTreeMap::new()),
             None => to_raw = true,
         },
         "backdrop-filter" | "-webkit-backdrop-filter" => match single_filter(value, "blur") {
@@ -567,7 +624,10 @@ pub fn remove_decl(style: &mut Style, prop: &str) {
         "border-radius" => "radius",
         "mix-blend-mode" => "blend",
         "box-shadow" => "shadows",
-        "filter" => "blur",
+        "filter" => {
+            style.filters.clear();
+            "blur"
+        }
         "backdrop-filter" => "backdropBlur",
         "transform" => "rotate",
         p if p.starts_with("border") => "border",
@@ -602,6 +662,11 @@ fn corners(r: &[Len; 4]) -> String {
     } else {
         r.iter().map(Len::to_string).collect::<Vec<_>>().join(" ")
     }
+}
+
+/// The first argument's trailing ` in <space>`, or nothing.
+fn space_css(space: &Option<String>) -> String {
+    space.as_ref().map(|s| format!(" in {s}")).unwrap_or_default()
 }
 
 fn stops_css(stops: &[Stop]) -> String {
@@ -736,12 +801,26 @@ pub fn compile(node: &Node, parent: ParentCtx) -> Vec<(String, String)> {
                     Fill::Solid { color, .. } => {
                         (format!("linear-gradient({0}, {0})", color.to_css()), "auto", "no-repeat")
                     }
-                    Fill::Linear { angle, stops, .. } => {
-                        (format!("linear-gradient({}deg, {})", fmt_num(*angle), stops_css(stops)), "auto", "no-repeat")
-                    }
-                    Fill::Radial { stops, .. } => {
-                        (format!("radial-gradient(circle, {})", stops_css(stops)), "auto", "no-repeat")
-                    }
+                    Fill::Linear { angle, stops, space, .. } => (
+                        format!("linear-gradient({}deg{}, {})", fmt_num(*angle), space_css(space), stops_css(stops)),
+                        "auto",
+                        "no-repeat",
+                    ),
+                    Fill::Radial { stops, space, .. } => (
+                        format!("radial-gradient(circle{}, {})", space_css(space), stops_css(stops)),
+                        "auto",
+                        "no-repeat",
+                    ),
+                    Fill::Conic { angle, stops, space, .. } => (
+                        format!(
+                            "conic-gradient(from {}deg{}, {})",
+                            fmt_num(*angle),
+                            space_css(space),
+                            stops_css(stops)
+                        ),
+                        "auto",
+                        "no-repeat",
+                    ),
                     Fill::Image { asset, fit, .. } => (
                         format!("url(\"/assets/{asset}\")"),
                         match fit {
@@ -785,8 +864,12 @@ pub fn compile(node: &Node, parent: ParentCtx) -> Vec<(String, String)> {
     if !shadows.is_empty() {
         put("box-shadow", shadows.join(", "));
     }
-    if let Some(b) = s.blur {
-        put("filter", format!("blur({}px)", fmt_num(b)));
+    let mut filter: Vec<String> = s.blur.map(|b| format!("blur({}px)", fmt_num(b))).into_iter().collect();
+    for (k, v) in &s.filters {
+        filter.push(format!("{k}({}{})", fmt_num(*v), if k == "hue-rotate" { "deg" } else { "" }));
+    }
+    if !filter.is_empty() {
+        put("filter", filter.join(" "));
     }
     if let Some(b) = s.backdrop_blur {
         put("backdrop-filter", format!("blur({}px)", fmt_num(b)));
@@ -953,5 +1036,28 @@ mod tests {
             "background-color: #ffffff; background-image: url(\"/assets/abc123\"); background-size: cover; \
              background-position: center; background-repeat: no-repeat"
         );
+    }
+
+    #[test]
+    fn conic_gradients_color_spaces_and_filters_round_trip() {
+        let css = "background: conic-gradient(from 90deg in oklch, #fff, #000); filter: blur(2px) brightness(1.2) hue-rotate(30deg)";
+        let s = styled(css);
+        assert!(
+            matches!(&s.fills[0], Fill::Conic { angle, space, .. } if *angle == 90.0 && space.as_deref() == Some("oklch"))
+        );
+        assert_eq!(
+            (s.blur, s.filters.get("brightness"), s.filters.get("hue-rotate")),
+            (Some(2.0), Some(&1.2), Some(&30.0))
+        );
+        let out = compiled(NodeKind::Frame, css, ParentCtx::default());
+        assert!(out.contains("conic-gradient(from 90deg in oklch, #ffffff 0%, #000000 100%)"), "{out}");
+        assert!(out.contains("filter: blur(2px) brightness(1.2) hue-rotate(30deg)"), "{out}");
+        let s = styled("background: linear-gradient(90deg in oklab, #fff, #000)");
+        assert!(
+            matches!(&s.fills[0], Fill::Linear { angle, space, .. } if *angle == 90.0 && space.as_deref() == Some("oklab"))
+        );
+        let mut s = styled(css);
+        remove_decl(&mut s, "filter");
+        assert!(s.blur.is_none() && s.filters.is_empty());
     }
 }

@@ -130,7 +130,8 @@ impl Gen<'_> {
                 .collect::<String>()
         };
         match fill {
-            Fill::Linear { angle, stops: st, .. } => {
+            // SVG has no conic gradient; it falls back to a linear one at the same angle.
+            Fill::Linear { angle, stops: st, .. } | Fill::Conic { angle, stops: st, .. } => {
                 // CSS angles point "to" a direction: 0deg is up, 90deg is right.
                 let t = angle.to_radians();
                 let (dx, dy) = (t.sin() / 2.0, -t.cos() / 2.0);
@@ -163,7 +164,7 @@ impl Gen<'_> {
                     let (c, a) = paint(self.doc, color);
                     let _ = write!(out, r#"{shape} fill="{c}" fill-opacity="{}"/>"#, num(a));
                 }
-                Fill::Linear { .. } | Fill::Radial { .. } => {
+                Fill::Linear { .. } | Fill::Radial { .. } | Fill::Conic { .. } => {
                     let g = self.gradient(f);
                     let _ = write!(out, r#"{shape} fill="{g}"/>"#);
                 }

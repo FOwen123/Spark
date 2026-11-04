@@ -251,6 +251,32 @@ fn handle(hub: &Arc<Hub>, client: ClientId, tx: &Tx, msg: Value) {
             let r = hub.trash(msg["id"].as_str().unwrap_or_default()).map(|()| Value::Null);
             reply(tx, &rid, r);
         }
+        "browse" => {
+            let dir = msg["dir"].as_str().unwrap_or_default();
+            let c = &hub.config;
+            let r = c.subfolders(dir).map(|folders| {
+                let files: Vec<Value> = c
+                    .recent()
+                    .into_iter()
+                    .map(|f| json!({"id": f.id, "name": f.name, "path": f.path, "openedAt": f.opened_at, "folder": c.folder_of(&f.path)}))
+                    .collect();
+                json!({"folders": folders, "files": files})
+            });
+            reply(tx, &rid, r);
+        }
+        "mkdir" => {
+            let r = hub.config.mkdir(msg["dir"].as_str().unwrap_or_default(), msg["name"].as_str().unwrap_or_default());
+            reply(tx, &rid, r.map(|p| json!({"path": p})));
+        }
+        "move" => {
+            let r = hub.move_to(msg["id"].as_str().unwrap_or_default(), msg["dir"].as_str().unwrap_or_default());
+            reply(tx, &rid, r.map(|p| json!({"path": p})));
+        }
+        "duplicate" => reply(tx, &rid, hub.duplicate(msg["id"].as_str().unwrap_or_default())),
+        "rename" => {
+            let r = hub.rename(msg["id"].as_str().unwrap_or_default(), msg["name"].as_str().unwrap_or_default());
+            reply(tx, &rid, r.map(|()| Value::Null));
+        }
         "close" => {
             if let Some(d) = hub.get(file) {
                 d.lock().unwrap().subscribers.remove(&client);
@@ -329,6 +355,10 @@ fn handle(hub: &Arc<Hub>, client: ClientId, tx: &Tx, msg: Value) {
             let r = with_doc(&mut |d| {
                 let (result, ops) = commands::run(d, &msg["cmd"])?;
                 d.commit_ops(&ops);
+                if msg["cmd"]["type"] == "renameFile" {
+                    // The recent list shows the new name too.
+                    hub.config.remember(&d.editor.doc.id, &d.editor.doc.name, &d.path);
+                }
                 Ok(result)
             });
             reply(tx, &rid, r);

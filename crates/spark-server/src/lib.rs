@@ -202,6 +202,7 @@ pub fn router(state: AppState, web_dir: Option<PathBuf>) -> Router {
         .route("/ui", any(ui_socket))
         .route("/assets/{hash}", get(asset))
         .route("/fonts/css", get(fonts::css))
+        .route("/fonts/list", get(fonts::list))
         .route("/fonts/file/{*path}", get(fonts::file))
         .route("/api/import", post(import_file))
         .route("/api/assets", post(upload_asset))
