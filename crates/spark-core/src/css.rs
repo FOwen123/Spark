@@ -691,7 +691,9 @@ pub fn compile(node: &Node, parent: ParentCtx) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::with_capacity(16);
     let mut put = |k: &str, v: String| out.push((k.to_string(), v));
     let text = node.kind == NodeKind::Text;
-    let absolute = matches!(s.position.as_deref(), Some("absolute" | "fixed"));
+    // With both insets set, `auto` would stretch between them instead of fitting the content.
+    let absolute =
+        matches!(s.position.as_deref(), Some("absolute" | "fixed")) && !(s.top.is_some() && s.bottom.is_some());
 
     for (axis, size) in [("width", &s.width), ("height", &s.height)] {
         match size {
@@ -1021,6 +1023,12 @@ mod tests {
         assert!(css.starts_with("width: 410px; height: auto;"), "{css}");
         let css = compiled(NodeKind::Frame, "width: 410px; height: fit-content", ParentCtx::default());
         assert!(css.starts_with("width: 410px; height: fit-content"), "{css}");
+        let css = compiled(
+            NodeKind::Frame,
+            "position: absolute; top: 0; bottom: 0; height: fit-content",
+            ParentCtx::default(),
+        );
+        assert!(css.contains("height: fit-content"), "{css}");
     }
 
     #[test]
