@@ -2,7 +2,7 @@ import { type Page, expect, test } from "@playwright/test";
 import { callJson, connectAgent } from "./mcp";
 import { camera, newFile } from "./util";
 
-const SHOTS = "/tmp/paper-parity/f";
+const SHOTS = "test-results/shots/panels";
 /** Screenshots a locator (or the page) in light and dark. */
 async function shots(page: Page, name: string, target?: ReturnType<Page["locator"]>) {
   for (const theme of ["light", "dark"]) {

@@ -135,7 +135,7 @@ pub fn catalog() -> Vec<Value> {
         tool(
             "get_jsx",
             Read,
-            "React JSX for a subtree, with inline styles or Tailwind classes. Read exact values from here, not from screenshots.",
+            "React JSX for a subtree, with inline styles or Tailwind classes. Exact values for code come from here.",
             json!({"fileId": file(), "nodeId": {"type": "string"}, "nodeIds": {"type": "array", "items": {"type": "string"}}, "format": {"type": "string", "enum": ["inline-styles", "tailwind"], "default": "inline-styles"}, "includeNodeIds": {"type": "boolean", "default": true}, "includeRootPositioning": {"type": "boolean", "default": false}}),
             &[],
         ),
@@ -315,12 +315,11 @@ pub fn guide(topic: &str) -> Option<&'static str> {
     }
 }
 
-pub const INSTRUCTIONS: &str = "Spark is a design canvas made of real HTML and CSS.\n\
-- First read the guide: get_guide({topic: \"spark-mcp-instructions\"}).\n\
-- Start with get_basic_info and get_selection; pass pageId explicitly when working on a page other than the viewed one.\n\
-- Call get_font_family_info before choosing fonts or typography.\n\
-- Write one visual group per write_html call, then check it with get_screenshot.\n\
-- Use height: fit-content instead of guessing heights.\n\
-- For code, read exact values with get_jsx and get_computed_styles, not from screenshots.\n\
-- When finished, call finish_working_on_nodes.\n\
-- Never show node ids to the user; refer to layers by name.";
+pub const INSTRUCTIONS: &str = "Spark files are pages of artboards, and every layer is real HTML and CSS.\n\
+Read get_guide({topic: \"spark-mcp-instructions\"}) once before you edit; it covers layout, fonts, images and tokens.\n\
+Orient with get_basic_info (pages, artboards, tokens) and get_selection (what the user picked). Page-scoped calls use the page on screen unless you pass pageId.\n\
+Build a design in small write_html batches and look at each one with get_screenshot before moving on. Let containers grow with their content instead of setting heights you would have to guess.\n\
+Choose typefaces after get_font_family_info shows what is installed or downloadable.\n\
+When turning a design into code, take numbers from get_jsx and get_computed_styles; screenshots are for looking, not measuring.\n\
+Talk about layers by name; ids are for tool calls.\n\
+Call finish_working_on_nodes when you stop, to clear your activity marks.";

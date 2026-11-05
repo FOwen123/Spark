@@ -4,12 +4,12 @@ import { type Page, expect, test } from "@playwright/test";
 import { call, callJson, connectAgent } from "./mcp";
 import { newFile } from "./util";
 
-const SHOTS = "/tmp/paper-parity/d";
+const SHOTS = "test-results/shots/inspector";
 
 /** A new file whose first artboard holds `html`; returns the agent that wrote it. */
 async function scene(page: Page, html: string) {
   await newFile(page);
-  const agent = await connectAgent("parity-d");
+  const agent = await connectAgent("Inspector agent");
   const info = await callJson<{ artboards: { id: string }[] }>(agent, "get_basic_info");
   await call(agent, "write_html", { targetNodeId: info.artboards[0].id, html });
   return agent;

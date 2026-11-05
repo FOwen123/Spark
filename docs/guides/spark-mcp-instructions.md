@@ -18,10 +18,10 @@ Spark is a design canvas built from real HTML and CSS. Every layer is a DOM elem
 ## Writing designs
 
 - Create a screen with `create_artboard` (it is placed in free space), then fill it with `write_html`.
-- Write **one visual group per `write_html` call**: a header, then a hero, then a card row. Small calls show progress live, are easier to fix, and undo cleanly (each tool call is one undo step).
+- Build in small steps: send each section (a header, then a hero, then a row of cards) as its own `write_html` call. Small calls show progress live, are easier to fix, and undo cleanly (each tool call is one undo step).
 - Use inline `style` attributes. Class names and `<style>` blocks are ignored.
 - Lay out with flexbox (`display: flex`, `gap`, `padding`, `align-items`, `justify-content`). Prefer `width: 100%` or flex sizing over fixed pixel widths inside containers.
-- Do not guess heights. Use `height: fit-content` (or leave height unset) and let content decide, then check with a screenshot.
+- Let content set the height: leave `height` unset or use `height: fit-content` instead of a pixel value, then confirm with a screenshot.
 - `layer-name="Pricing card"` names a layer. Name the important groups; it helps the user and you.
 - Reuse an existing layer with `<spark-clone node-id="…"></spark-clone>`; inline styles on the clone element override the copy's own.
 - Text inside an element that holds only text and inline tags (`b`, `em`, `span`, `a`, `br`) becomes one text layer.
@@ -36,7 +36,7 @@ Call `get_font_family_info` before you pick fonts. Geist and Geist Mono always w
 
 - Call `get_screenshot` on the artboard after each meaningful change. Look for clipped text, overflow, uneven spacing, and low contrast.
 - `get_tree_summary` shows the structure compactly; `get_node_info` shows one layer's size and position. Sizes are in CSS pixels.
-- For code export, read exact values with `get_jsx` and `get_computed_styles`. Never read sizes or colors off a screenshot.
+- For code export, take exact numbers and colors from `get_jsx` and `get_computed_styles`; a screenshot only shows how it looks.
 
 ## Tokens
 

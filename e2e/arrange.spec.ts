@@ -1,7 +1,7 @@
 import { type Page, expect, test } from "@playwright/test";
 import { newFile } from "./util";
 
-const SHOTS = "/tmp/paper-parity/a";
+const SHOTS = "test-results/shots/arrange";
 
 async function drag(page: Page, from: [number, number], to: [number, number]) {
   await page.mouse.move(...from);

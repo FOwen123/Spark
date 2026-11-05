@@ -39,9 +39,9 @@ async function pasteHtml(page: Page, html: string) {
   }, html);
 }
 
-/** Saves a screenshot for review when PARITY_SHOTS names a folder. */
+/** Saves a screenshot for review when SPARK_SHOTS names a folder. */
 async function shot(page: Page, name: string) {
-  const dir = process.env.PARITY_SHOTS;
+  const dir = process.env.SPARK_SHOTS;
   if (!dir) return;
   mkdirSync(dir, { recursive: true });
   for (const theme of ["light", "dark"]) {
