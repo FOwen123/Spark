@@ -691,10 +691,14 @@ pub fn compile(node: &Node, parent: ParentCtx) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::with_capacity(16);
     let mut put = |k: &str, v: String| out.push((k.to_string(), v));
     let text = node.kind == NodeKind::Text;
+    let absolute = matches!(s.position.as_deref(), Some("absolute" | "fixed"));
 
     for (axis, size) in [("width", &s.width), ("height", &s.height)] {
         match size {
             Some(Size::Fixed(l)) => put(axis, l.to_string()),
+            // An absolute box with `auto` height already fits its content. macOS WebKit collapses
+            // `fit-content` there when a child's height is a percentage.
+            Some(Size::Hug) if absolute && axis == "height" && !text => put(axis, "auto".into()),
             Some(Size::Hug) => put(axis, if text { "max-content" } else { "fit-content" }.into()),
             Some(Size::Fill) => {
                 let main = parent.flex && (parent.row == (axis == "width"));
@@ -1008,6 +1012,15 @@ mod tests {
         assert_eq!(css, "width: 100px; height: 50px; border-radius: 4px; background-color: #ff0000");
         let css = compiled(NodeKind::Text, "width: hug; color: #000; font-size: 14px", ParentCtx::default());
         assert_eq!(css, "width: max-content; font-size: 14px; color: #000000; white-space: pre-wrap");
+    }
+
+    #[test]
+    fn absolute_hug_height_compiles_to_auto() {
+        let css =
+            compiled(NodeKind::Frame, "position: absolute; width: 410px; height: fit-content", ParentCtx::default());
+        assert!(css.starts_with("width: 410px; height: auto;"), "{css}");
+        let css = compiled(NodeKind::Frame, "width: 410px; height: fit-content", ParentCtx::default());
+        assert!(css.starts_with("width: 410px; height: fit-content"), "{css}");
     }
 
     #[test]
