@@ -24,7 +24,7 @@ The screenshots show [`fixtures/demo/Showcase.spark`](fixtures/demo/Showcase.spa
 
 ## Build and run
 
-You need Rust (stable), Bun 1.3+ and Node 22+ (Bun installs and runs the scripts; Vite, Vitest and Playwright run on Node).
+You need Rust (stable), Bun 1.4+ and Node 22+ (Bun installs and runs the scripts; Vite, Vitest and Playwright run on Node).
 
 ```sh
 bun install

@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { type Page, expect, test } from "@playwright/test";
 import { camera, newFile } from "./util";
 
-const SHOTS = "/tmp/paper-parity/c";
+const SHOTS = "test-results/shots/canvas-aids";
 mkdirSync(SHOTS, { recursive: true });
 
 type Box = { x: number; y: number; width: number; height: number };

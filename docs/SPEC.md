@@ -127,7 +127,7 @@ The layout matches a professional canvas editor, all in black and white:
 
 Tool annotations must be honest: export, presence and file-writing tools are not `readOnlyHint`.
 
-**Server instructions** tell agents to read the `spark-mcp-instructions` guide first, start with `get_basic_info` and `get_selection`, prefer explicit `pageId`, check fonts before typography, write one visual group per `write_html` call, screenshot to review, use `fit-content` heights instead of guessing, call `finish_working_on_nodes` when done, and never show node ids to the user. The guide text is written fresh for Spark, versioned with the tools, and stored as markdown in the repo.
+**Server instructions** point agents at the `spark-mcp-instructions` guide, then cover orienting with `get_basic_info` and `get_selection` (and `pageId` for other pages), building in small `write_html` batches checked with `get_screenshot`, content-sized heights, fonts from `get_font_family_info`, exact values for code from `get_jsx` and `get_computed_styles`, naming layers instead of showing ids, and `finish_working_on_nodes` at the end. The guide text is written fresh for Spark, versioned with the tools, and stored as markdown in the repo.
 
 **Agent presence**: each MCP session is an agent with a name taken from `clientInfo` (Claude Code, Codex, Cursor, …). The agent panel lists connected agents, and with nothing selected the inspector lists the agents working in the file, grouped by page. The UI also shows a working indicator on tabs where an agent is active, the falling-dot pattern above artboards an agent is writing to, and a scan sweep on nodes it reads or writes. `finish_working_on_nodes` clears the indicators, and they also clear when the session ends.
 
