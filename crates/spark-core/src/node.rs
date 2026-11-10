@@ -133,7 +133,7 @@ pub struct Node {
     /// Column, row and grid guides drawn over a frame.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub layout_guides: Vec<LayoutGuide>,
-    /// Image request or generation state (see the Images section of the spec).
+    /// Image request or generation state (see the Images section of the spec); `ImageStatus` reads it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<serde_json::Value>,
     /// Tombstone: deleted nodes stay in the file so undo and future sync can restore them.
@@ -194,3 +194,34 @@ pub const PAGE_ICONS: &[&str] = &[
     "pie-chart",
     "page",
 ];
+
+/// Where a requested or generated image stands, stored as `status` in a node's `image`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageStatus {
+    /// Waiting for an agent to supply the image.
+    Pending,
+    /// A provider job is generating it. The job lives in the running app, not in the file.
+    Processing,
+    Ready,
+    Error,
+}
+
+impl ImageStatus {
+    pub fn of(image: &serde_json::Value) -> ImageStatus {
+        match image["status"].as_str() {
+            Some("pending") => ImageStatus::Pending,
+            Some("ready") => ImageStatus::Ready,
+            Some("error") => ImageStatus::Error,
+            _ => ImageStatus::Processing,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ImageStatus::Pending => "pending",
+            ImageStatus::Processing => "processing",
+            ImageStatus::Ready => "ready",
+            ImageStatus::Error => "error",
+        }
+    }
+}

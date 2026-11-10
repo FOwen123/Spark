@@ -70,5 +70,6 @@ for a in "$@"; do
   case "$a" in --mcp-config) echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Spark MCP attached"}]}}';; esac
 done
 echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Reading the file"},{"type":"tool_use","name":"mcp__spark__get_basic_info"}]}}'
+case "$*" in *"take your time"*) sleep 30;; esac
 echo '{"type":"result","result":"All done"}'
 `;

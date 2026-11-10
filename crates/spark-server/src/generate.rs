@@ -6,7 +6,7 @@ use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use base64::Engine;
 use serde_json::{Value, json};
-use spark_core::{Document, NodeId, Op, Parent, style::Fill};
+use spark_core::{Document, ImageStatus, NodeId, Op, Parent, style::Fill};
 
 use crate::{
     hub::Hub,
@@ -504,34 +504,64 @@ fn reference_text(doc: &Document, refs: &[String]) -> String {
     if parts.is_empty() { String::new() } else { format!("Context: {}\n\n", parts.join(" / ")) }
 }
 
+/// Marks images a file still calls `processing` as failed. Called when a file is loaded: the jobs
+/// lived in an app that has since let go of the file, so nothing is left to finish them.
+pub fn fail_interrupted(doc: &mut Document) {
+    let cut_off: Vec<(NodeId, Value)> = doc
+        .all_nodes()
+        .filter_map(|n| Some((n.id, n.image.clone()?)))
+        .filter(|(_, image)| ImageStatus::of(image) == ImageStatus::Processing)
+        .collect();
+    for (id, mut image) in cut_off {
+        image["status"] = json!(ImageStatus::Error.as_str());
+        image["error"] = json!("Spark closed this file before the image arrived.");
+        let _ = doc.apply(Op::Set { id, prop: "image".into(), value: image });
+    }
+}
+
 /// Puts finished image bytes on a request's node (or marks it failed). Not an undo step: the
 /// placeholder's creation is.
 pub fn finish(hub: &Hub, file: &str, request: &str, result: Result<Vec<u8>, String>) -> Result<NodeId, String> {
     let doc = hub.get(file).ok_or("the file was closed")?;
     let mut d = doc.lock().unwrap();
-    let id = node_for_request(&d.editor.doc, request)
-        .ok_or_else(|| format!("no image request {request} (it may have been deleted)"))?;
-    let mut image = d.editor.doc.node(id).unwrap().image.clone().unwrap_or(json!({}));
-    let mut ops = Vec::new();
+    // The placeholder may be deleted right now and come back with undo or redo: look past that.
+    let node = d
+        .editor
+        .doc
+        .all_nodes()
+        .find(|n| n.image.as_ref().is_some_and(|i| i["id"] == request))
+        .ok_or_else(|| format!("no image request {request}"))?;
+    let (id, live) = (node.id, !node.deleted);
+    let mut image = node.image.clone().unwrap_or(json!({}));
+    let mut fills = node.style.fills.clone();
     match result {
         Ok(bytes) => {
             let asset = crate::add_asset(&mut d, &bytes)?;
             let hash = asset["hash"].as_str().unwrap().to_string();
-            let mut fills = d.editor.doc.node(id).unwrap().style.fills.clone();
             fills.retain(|f| !matches!(f, Fill::Image { .. }));
             fills.insert(0, Fill::Image { asset: hash, fit: spark_core::style::Fit::Cover, hidden: false });
-            ops.push(Op::Set { id, prop: "style.fills".into(), value: serde_json::to_value(&fills).unwrap() });
-            image["status"] = json!("ready");
+            image["status"] = json!(ImageStatus::Ready.as_str());
             image["error"] = Value::Null;
         }
         Err(e) => {
-            image["status"] = json!("error");
+            image["status"] = json!(ImageStatus::Error.as_str());
             image["error"] = json!(e);
         }
     }
-    ops.push(Op::Set { id, prop: "image".into(), value: image });
-    let done = d.editor.apply_unrecorded(ops).map_err(|e| e.to_string())?;
-    d.commit_ops(&done);
+    // History holds the node as it was inserted; without this, undo then redo brings back the
+    // unfinished placeholder.
+    d.editor.amend_inserts(id, |n| {
+        n.image = Some(image.clone());
+        n.style.fills = fills.clone();
+    });
+    if live {
+        let ops = vec![
+            Op::Set { id, prop: "style.fills".into(), value: serde_json::to_value(&fills).unwrap() },
+            Op::Set { id, prop: "image".into(), value: image },
+        ];
+        let done = d.editor.apply_unrecorded(ops).map_err(|e| e.to_string())?;
+        d.commit_ops(&done);
+    }
     Ok(id)
 }
 

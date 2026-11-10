@@ -13,8 +13,8 @@ use spark_core::{
 };
 
 use crate::{
-    edit::{self, origin_of, round2},
-    hub::OpenDoc,
+    edit::{self, Gesture, GestureKind, origin_of, round2},
+    hub::{ClientId, OpenDoc},
 };
 use spark_core::codegen::{self, CodeOpts, Format};
 
@@ -178,8 +178,21 @@ pub fn paste_html(
     Ok((json!({"ids": imp.roots, "notes": imp.notes}), ops))
 }
 
-/// Runs one UI command. Returns the reply payload and the ops that were applied.
-pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
+/// Runs one UI command from window `client`. Returns the reply payload and the ops that were applied.
+pub fn run(open: &mut OpenDoc, client: ClientId, cmd: &Value) -> CmdResult {
+    let result = run_cmd(open, client, cmd);
+    // A gesture and its undo group end together. Undo closes the group under a drag, so the drag is
+    // over; a start or drop that failed halfway leaves a group with no gesture, so it is taken back.
+    if !open.editor.in_group() {
+        open.gesture = None;
+    } else if open.gesture.is_none() {
+        let undo = open.editor.cancel();
+        open.commit_ops(&undo);
+    }
+    result
+}
+
+fn run_cmd(open: &mut OpenDoc, client: ClientId, cmd: &Value) -> CmdResult {
     let kind = cmd["type"].as_str().unwrap_or_default();
     let merge = cmd["merge"].as_str().map(str::to_string);
     let tx = |open: &mut OpenDoc, ops: Vec<Op>| open.editor.transact(ops, merge.as_deref()).map_err(|e| e.to_string());
@@ -187,14 +200,19 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
         "undo" => Ok((json!(null), open.editor.undo().unwrap_or_default())),
         "redo" => Ok((json!(null), open.editor.redo().unwrap_or_default())),
         "begin" => {
+            open.end_gesture();
             open.editor.begin();
+            open.gesture = Some(Gesture { by: client, kind: GestureKind::Styling });
             Ok((json!(null), vec![]))
         }
-        "commit" => {
-            open.editor.commit();
+        "commit" | "resizeEnd" => {
+            open.end_gesture();
             Ok((json!(null), vec![]))
         }
-        "cancel" => Ok((json!(null), open.editor.cancel())),
+        "cancel" => {
+            open.gesture = None;
+            Ok((json!(null), open.editor.cancel()))
+        }
         "create" => {
             let c: Create = parse(cmd)?;
             let parent: Parent = c.parent.parse().map_err(|e: spark_core::id::IdError| e.to_string())?;
@@ -215,6 +233,11 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
                 styles: serde_json::Map<String, Value>,
             }
             let c: C = parse(cmd)?;
+            // A style handle's frames arriving after its gesture ended (undo mid-drag) are dropped,
+            // or each would become its own undo step.
+            if cmd["gesture"] == true && !matches!(open.gesture, Some(Gesture { kind: GestureKind::Styling, .. })) {
+                return Err("no gesture in progress".into());
+            }
             let mut ignored = Vec::new();
             let mut ops = Vec::new();
             for id in ids(&c.ids)? {
@@ -286,15 +309,18 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
         }
         "dragStart" => {
             let mut list = ids(&parse::<Vec<String>>(&cmd["ids"])?)?;
+            // A start can outrun the end of the gesture before it.
+            open.end_gesture();
+            open.editor.begin();
             let mut ops = Vec::new();
             if cmd["duplicate"].as_bool().unwrap_or(false) {
-                open.editor.begin();
                 let (new_ids, dup, _) = edit::duplicate(open, &list, false)?;
                 ops = tx(open, dup)?;
                 list = new_ids;
                 open.editor.selection = list.clone();
             }
-            edit::start_session(open, &list)?;
+            let session = edit::session(&open.editor.doc, &list)?;
+            open.gesture = Some(Gesture { by: client, kind: GestureKind::Moving(session) });
             Ok((json!({"ids": list}), ops))
         }
         "drag" => {
@@ -316,7 +342,10 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
         }
         "resizeStart" => {
             let list = ids(&parse::<Vec<String>>(&cmd["ids"])?)?;
-            edit::start_session(open, &list)?;
+            open.end_gesture();
+            let session = edit::session(&open.editor.doc, &list)?;
+            open.editor.begin();
+            open.gesture = Some(Gesture { by: client, kind: GestureKind::Resizing(session) });
             Ok((json!(null), vec![]))
         }
         "resize" => {
@@ -328,11 +357,6 @@ pub fn run(open: &mut OpenDoc, cmd: &Value) -> CmdResult {
                 cmd["pixel"].as_bool().unwrap_or(false),
                 cmd["zoom"].as_f64().unwrap_or(1.0),
             )
-        }
-        "resizeEnd" => {
-            open.session = None;
-            open.editor.commit();
-            Ok((json!(null), vec![]))
         }
         "nudge" => {
             let list = ids(&parse::<Vec<String>>(&cmd["ids"])?)?;

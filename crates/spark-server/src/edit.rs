@@ -8,7 +8,7 @@ use spark_core::{
     style::{Len, Size, Style},
 };
 
-use crate::hub::OpenDoc;
+use crate::hub::{ClientId, OpenDoc};
 
 pub fn round2(v: f64) -> f64 {
     (v * 100.0).round() / 100.0
@@ -279,7 +279,22 @@ impl Snapper {
     }
 }
 
-/// An in-progress drag or resize, grouped into one undo step.
+/// A pointer gesture from press to release. Everything applied while it is open lands in one undo
+/// group: `OpenDoc::end_gesture` commits the group as a single step, `cancel_gesture` reverts it.
+pub struct Gesture {
+    /// The window whose pointer it is; the gesture is reverted if that window goes away.
+    pub by: ClientId,
+    pub kind: GestureKind,
+}
+
+pub enum GestureKind {
+    Moving(Session),
+    Resizing(Session),
+    /// A style handle (rotate, padding, gap), which sends plain `setStyle` commands.
+    Styling,
+}
+
+/// What a drag or resize measured when it started.
 pub struct Session {
     pub ids: Vec<NodeId>,
     origins: Vec<(NodeId, Rect)>,
@@ -305,21 +320,18 @@ fn roots(doc: &Document, ids: &[NodeId]) -> Vec<NodeId> {
 /// Drops layers another client deleted since the session started.
 fn prune_session(open: &mut OpenDoc) {
     let doc = &open.editor.doc;
-    if let Some(s) = &mut open.session {
+    if let Some(Gesture { kind: GestureKind::Moving(s) | GestureKind::Resizing(s), .. }) = &mut open.gesture {
         s.ids.retain(|id| doc.is_live(*id));
         s.origins.retain(|(id, _)| doc.is_live(*id));
     }
 }
 
-pub fn start_session(open: &mut OpenDoc, ids: &[NodeId]) -> Result<(), String> {
-    let doc = &open.editor.doc;
+pub fn session(doc: &Document, ids: &[NodeId]) -> Result<Session, String> {
     let ids = roots(doc, ids);
     let origins: Vec<(NodeId, Rect)> = ids.iter().filter_map(|id| Some((*id, *doc.measured.get(id)?))).collect();
     let union = union(origins.iter().map(|(_, r)| *r)).ok_or("nothing measured to move")?;
     let snapper = Snapper::new(doc, &ids);
-    open.editor.begin();
-    open.session = Some(Session { ids, origins, union, snapper });
-    Ok(())
+    Ok(Session { ids, origins, union, snapper })
 }
 
 /// Deep-copies `id` and its subtree under `parent` at `key`. Returns the new root id, the ops,
@@ -415,7 +427,9 @@ pub fn drag(
     zoom: f64,
 ) -> Result<(Value, Vec<Op>), String> {
     prune_session(open);
-    let Some(s) = &open.session else { return Err("no drag in progress".into()) };
+    let Some(Gesture { kind: GestureKind::Moving(s), .. }) = &open.gesture else {
+        return Err("no drag in progress".into());
+    };
     let moved = Rect { x: s.union.x + dx, y: s.union.y + dy, ..s.union };
     let (sx, sy, guides) =
         if snap { s.snapper.snap_move(&moved, 4.0 / zoom.max(0.01)) } else { (0.0, 0.0, Vec::new()) };
@@ -522,7 +536,11 @@ pub fn reparent_ops(
 
 pub fn end_drag(open: &mut OpenDoc, point: Option<(f64, f64)>, reparent: bool) -> Result<Vec<Op>, String> {
     prune_session(open);
-    let Some(s) = open.session.take() else { return Ok(vec![]) };
+    let Some(Gesture { kind: GestureKind::Moving(s), .. }) =
+        open.gesture.take_if(|g| matches!(g.kind, GestureKind::Moving(_)))
+    else {
+        return Ok(vec![]);
+    };
     let mut ops = Vec::new();
     if let (true, Some((x, y)), Some(page)) = (reparent, point, open.editor.page) {
         let doc = &open.editor.doc;
@@ -577,7 +595,9 @@ pub fn resize(
     zoom: f64,
 ) -> Result<(Value, Vec<Op>), String> {
     prune_session(open);
-    let Some(s) = &open.session else { return Err("no resize in progress".into()) };
+    let Some(Gesture { kind: GestureKind::Resizing(s), .. }) = &open.gesture else {
+        return Err("no resize in progress".into());
+    };
     let (target, guides) =
         if snap { s.snapper.snap_resize(&s.union, &target, 4.0 / zoom.max(0.01)) } else { (target, Vec::new()) };
     let sx = if s.union.w > 0.0 { target.w / s.union.w } else { 1.0 };

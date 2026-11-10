@@ -10,6 +10,7 @@ use std::{
 use crate::{
     doc::{Document, Op, OpError, Parent},
     id::{NodeId, PageId},
+    node::Node,
     style::Len,
 };
 
@@ -203,6 +204,20 @@ impl Editor {
     pub fn resume_group(&mut self, group: Option<Transaction>) {
         if group.is_some() {
             self.group = group;
+        }
+    }
+
+    /// Rewrites a node inside every recorded insert, for a change that is not an undo step of its
+    /// own (a generated image arriving): undo and redo then bring the node back as it is now.
+    pub fn amend_inserts(&mut self, id: NodeId, change: impl Fn(&mut Node)) {
+        for tx in self.undo.iter_mut().chain(&mut self.redo).chain(&mut self.group) {
+            for op in tx.ops.iter_mut().chain(&mut tx.inverse) {
+                if let Op::Insert { node, .. } = op
+                    && node.id == id
+                {
+                    change(node);
+                }
+            }
         }
     }
 

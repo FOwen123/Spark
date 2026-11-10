@@ -304,6 +304,38 @@ async fn agent_calls_leave_an_open_ui_gesture_alone() {
 }
 
 #[tokio::test]
+async fn a_fulfilled_image_stays_ready_across_undo_and_redo() {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest};
+    const PNG: &str =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let s = TestServer::start().await;
+    let id = s.tool_json("create_file", json!({"name": "Image"})).await["fileId"].as_str().unwrap().to_string();
+    let board = s.tool_json("get_basic_info", json!({"fileId": id})).await["artboards"][0]["id"].clone();
+    let html = r#"<img src="spark-gen://agent?prompt=kite" style="width:100px">"#;
+    let node = s.tool_json("write_html", json!({"fileId": id, "targetNodeId": board, "html": html})).await["created"]
+        [0]["id"]
+        .clone();
+    let image =
+        async || s.tool_json("get_node_info", json!({"fileId": id, "nodeId": node})).await["imageGeneration"].clone();
+    let request = image().await["requestId"].clone();
+    s.tool_json("fulfill_image_request", json!({"fileId": id, "requestId": request, "base64": PNG})).await;
+
+    let req = format!("ws://127.0.0.1:{}/ui?token={}", s.port, s.token).into_client_request().unwrap();
+    let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+    for (rid, cmd) in ["undo", "redo"].into_iter().enumerate() {
+        let msg = json!({"t": "do", "file": id, "rid": rid, "cmd": {"type": cmd}});
+        ws.send(Message::Text(msg.to_string().into())).await.unwrap();
+        while serde_json::from_str::<Value>(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap()["rid"] != rid
+        {
+        }
+    }
+    assert_eq!(image().await["status"], "ready");
+    let (_, fill) = s.tool("get_fill_image", json!({"fileId": id, "nodeId": node})).await;
+    assert!(fill.iter().any(|c| c["type"] == "image"), "the image itself is back too: {fill:?}");
+}
+
+#[tokio::test]
 async fn opening_a_copy_of_an_open_file_opens_the_copy() {
     let s = TestServer::start().await;
     let file = s.tool_json("create_file", json!({"name": "Original"})).await;

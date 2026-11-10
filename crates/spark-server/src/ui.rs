@@ -279,7 +279,7 @@ fn handle(hub: &Arc<Hub>, client: ClientId, tx: &Tx, msg: Value) {
         }
         "close" => {
             if let Some(d) = hub.get(file) {
-                d.lock().unwrap().subscribers.remove(&client);
+                d.lock().unwrap().drop_client(client);
             }
             reply(tx, &rid, Ok(Value::Null));
         }
@@ -353,7 +353,7 @@ fn handle(hub: &Arc<Hub>, client: ClientId, tx: &Tx, msg: Value) {
         }
         "do" => {
             let r = with_doc(&mut |d| {
-                let (result, ops) = commands::run(d, &msg["cmd"])?;
+                let (result, ops) = commands::run(d, client, &msg["cmd"])?;
                 d.commit_ops(&ops);
                 if msg["cmd"]["type"] == "renameFile" {
                     // The recent list shows the new name too.

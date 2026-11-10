@@ -207,7 +207,7 @@ async fn export(
         store,
         path,
         subscribers: Default::default(),
-        session: None,
+        gesture: None,
         last_write: std::time::Instant::now(),
         save_error: None,
     }));

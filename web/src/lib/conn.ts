@@ -3,6 +3,8 @@
 
 export type ServerMsg = { t: string; [k: string]: unknown };
 type Pending = { resolve: (v: unknown) => void; reject: (e: Error) => void };
+/** `connecting` until the first socket opens or fails; a socket that closes leaves `reconnecting`. */
+export type ConnStatus = "connecting" | "open" | "reconnecting";
 
 export class Conn {
   private ws: WebSocket | null = null;
@@ -10,8 +12,8 @@ export class Conn {
   private pending = new Map<number, Pending>();
   private queue: string[] = [];
   private listeners = new Set<(m: ServerMsg) => void>();
-  private statusListeners = new Set<(s: boolean) => void>();
-  connected = false;
+  private statusListeners = new Set<(s: ConnStatus) => void>();
+  status: ConnStatus = "connecting";
 
   constructor(private url: string) {
     this.connect();
@@ -21,9 +23,8 @@ export class Conn {
     const ws = new WebSocket(this.url);
     this.ws = ws;
     ws.onopen = () => {
-      this.connected = true;
       for (const m of this.queue.splice(0)) ws.send(m);
-      for (const l of this.statusListeners) l(true);
+      this.setStatus("open");
     };
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data as string) as ServerMsg;
@@ -37,13 +38,20 @@ export class Conn {
       for (const l of this.listeners) l(msg);
     };
     ws.onclose = () => {
-      const wasConnected = this.connected;
-      this.connected = false;
+      // Whatever was waiting has failed, and so has whatever was queued: a caller told "connection
+      // closed" must not see its message sent on the next socket.
       for (const p of this.pending.values()) p.reject(new Error("connection closed"));
       this.pending.clear();
-      if (wasConnected) for (const l of this.statusListeners) l(false);
+      this.queue = [];
+      this.setStatus("reconnecting");
       setTimeout(() => this.connect(), 500);
     };
+  }
+
+  private setStatus(s: ConnStatus) {
+    if (s === this.status) return;
+    this.status = s;
+    for (const l of this.statusListeners) l(s);
   }
 
   send(msg: Record<string, unknown>) {
@@ -67,7 +75,7 @@ export class Conn {
     };
   }
 
-  onStatus(fn: (connected: boolean) => void) {
+  onStatus(fn: (status: ConnStatus) => void) {
     this.statusListeners.add(fn);
     return () => {
       this.statusListeners.delete(fn);

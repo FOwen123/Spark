@@ -30,14 +30,16 @@ import type { Tool } from "./Toolbar";
 
 export type Guide = { x1: number; y1: number; x2: number; y2: number; dashed?: boolean };
 
+/** A drag the server follows: `frame` is its newest command still waiting to be sent. */
+type Live = { frame?: Record<string, unknown> };
 type Drag =
   | { kind: "pan"; sx: number; sy: number; cam: Camera; right?: boolean }
   | { kind: "marquee"; sx: number; sy: number; scope: string; base: string[] }
-  | { kind: "move"; sx: number; sy: number; started: boolean; alt: boolean; click: string | null }
-  | { kind: "resize"; handle: Handle; sx: number; sy: number; start: Rect }
+  | ({ kind: "move"; sx: number; sy: number; started: boolean; alt: boolean; click: string | null } & Live)
+  | ({ kind: "resize"; handle: Handle; sx: number; sy: number; start: Rect } & Live)
   | { kind: "draw"; tool: Tool; wx: number; wy: number; parent: string }
-  | { kind: "flex"; id: string; key: FlexKey; sx: number; sy: number; start: number }
-  | { kind: "rotate"; id: string; c: { x: number; y: number }; a0: number; start: number }
+  | ({ kind: "flex"; id: string; key: FlexKey; sx: number; sy: number; start: number } & Live)
+  | ({ kind: "rotate"; id: string; c: { x: number; y: number }; a0: number; start: number } & Live)
   | { kind: "zoom"; sx: number; sy: number; alt: boolean };
 
 export type CanvasApi = {
@@ -368,10 +370,19 @@ export function Canvas(props: {
       updateMeasure();
       syncCursor();
     };
+    // Escape abandons a drag. Capture phase: it must not also reach the editor's Escape (select parent).
+    const onEscape = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !drag.current) return;
+      e.stopPropagation();
+      e.preventDefault();
+      cancelDrag();
+    };
+    window.addEventListener("keydown", onEscape, true);
     window.addEventListener("keydown", onKey);
     window.addEventListener("keyup", onKey);
     window.addEventListener("blur", reset);
     return () => {
+      window.removeEventListener("keydown", onEscape, true);
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("keyup", onKey);
       window.removeEventListener("blur", reset);
@@ -826,39 +837,41 @@ export function Canvas(props: {
   }
 
   // ---- pointer -------------------------------------------------------------
-  const pendingDrag = useRef<{ dx: number; dy: number; x: number; y: number; snap: boolean } | null>(null);
-  const pendingResize = useRef<Rect | null>(null);
-  const pendingStyle = useRef<{ id: string; styles: Record<string, string | number | null> } | null>(null);
-  const sending = useRef(false);
-  const snapOff = useRef(false);
-  const flush = useCallback(async () => {
-    if (sending.current) return;
-    sending.current = true;
-    try {
-      while (pendingDrag.current || pendingResize.current || pendingStyle.current) {
-        if (pendingStyle.current) {
-          const { id, styles } = pendingStyle.current;
-          pendingStyle.current = null;
-          await store.do({ type: "setStyle", ids: [id], styles }).catch(() => null);
-        }
-        if (pendingDrag.current) {
-          const d = pendingDrag.current;
-          pendingDrag.current = null;
-          const r = await store.do<{ guides: Guide[] }>({ type: "drag", ...d, pixel: getView().snapPixel, zoom: camRef.current.zoom }).catch(() => null);
-          ui.current.guides = r?.guides ?? [];
-        }
-        if (pendingResize.current) {
-          const rect = pendingResize.current;
-          pendingResize.current = null;
-          const r = await store.do<{ guides: Guide[] }>({ type: "resize", rect, snap: !snapOff.current, pixel: getView().snapPixel, zoom: camRef.current.zoom }).catch(() => null);
-          ui.current.guides = r?.guides ?? [];
-        }
-        requestDraw();
-      }
-    } finally {
-      sending.current = false;
-    }
-  }, [store, requestDraw]);
+  /** Gesture commands reach the server one at a time, in the order the pointer made them. */
+  const lane = useRef<Promise<unknown>>(Promise.resolve());
+  const toServer = (cmd: () => Record<string, unknown> | undefined) => {
+    const sent = lane.current.then(() => {
+      const c = cmd();
+      return c ? store.do<{ guides?: Guide[] }>(c).catch(() => null) : null;
+    });
+    lane.current = sent;
+    return sent;
+  };
+  /** Sends a drag's newest frame. Frames that pile up behind a slow reply collapse into the latest. */
+  const sendFrame = (d: Live, cmd: Record<string, unknown>) => {
+    const waiting = !!d.frame;
+    d.frame = cmd;
+    if (waiting) return;
+    toServer(() => {
+      const frame = d.frame;
+      d.frame = undefined;
+      return frame;
+    }).then((r) => {
+      ui.current.guides = r?.guides ?? [];
+      requestDraw();
+    });
+  };
+  /** Abandons the drag in progress: Escape, or the browser took the pointer away. */
+  function cancelDrag() {
+    const d = drag.current;
+    drag.current = null;
+    if (!d) return;
+    if (d.kind === "resize" || d.kind === "flex" || d.kind === "rotate" || (d.kind === "move" && d.started)) toServer(() => ({ type: "cancel" }));
+    ui.current.marquee = ui.current.preview = null;
+    ui.current.guides = [];
+    syncCursor();
+    requestDraw();
+  }
 
   const onPointerDown = (e: React.PointerEvent) => {
     if (ui.current.editing) return;
@@ -898,20 +911,21 @@ export function Canvas(props: {
       const start = liveSelection();
       if (start) {
         drag.current = { kind: "resize", handle, sx: p.x, sy: p.y, start };
-        store.do({ type: "resizeStart", ids: store.selection });
+        const ids = store.selection;
+        toServer(() => ({ type: "resizeStart", ids }));
         return;
       }
     }
     const fx = flexAt(p);
     if (fx) {
       drag.current = { kind: "flex", ...fx, sx: p.x, sy: p.y };
-      store.do({ type: "begin" });
+      toServer(() => ({ type: "begin" }));
       return;
     }
     const rt = rotateAt(p);
     if (rt) {
       drag.current = { kind: "rotate", id: rt.id, c: rt.c, a0: angleDeg(rt.c, p), start: rt.deg };
-      store.do({ type: "begin" });
+      toServer(() => ({ type: "begin" }));
       if (v) v.style.cursor = ROTATE_CURSOR;
       return;
     }
@@ -998,27 +1012,23 @@ export function Canvas(props: {
       if (!d.started) {
         if (Math.hypot(p.x - d.sx, p.y - d.sy) < 3) return;
         d.started = true;
-        store.do({ type: "dragStart", ids: store.selection, duplicate: d.alt });
+        const ids = store.selection;
+        toServer(() => ({ type: "dragStart", ids, duplicate: d.alt }));
       }
       const wp = toWorld(cam, p.x, p.y);
-      pendingDrag.current = { dx, dy, x: wp.x, y: wp.y, snap: !(e.metaKey || e.ctrlKey) };
-      flush();
+      sendFrame(d, { type: "drag", dx, dy, x: wp.x, y: wp.y, snap: !(e.metaKey || e.ctrlKey), pixel: getView().snapPixel, zoom: cam.zoom });
     } else if (d.kind === "resize") {
-      const r = resizeRect(d.start, d.handle, (p.x - d.sx) / cam.zoom, (p.y - d.sy) / cam.zoom, e.shiftKey, e.altKey);
-      snapOff.current = e.metaKey || e.ctrlKey || e.shiftKey || e.altKey;
-      pendingResize.current = r;
-      flush();
+      const rect = resizeRect(d.start, d.handle, (p.x - d.sx) / cam.zoom, (p.y - d.sy) / cam.zoom, e.shiftKey, e.altKey);
+      sendFrame(d, { type: "resize", rect, snap: !(e.metaKey || e.ctrlKey || e.shiftKey || e.altKey), pixel: getView().snapPixel, zoom: cam.zoom });
     } else if (d.kind === "flex") {
       const b = flexBox(store, reg, d.id);
       const horizontal = d.key === "pl" || d.key === "pr" || (d.key === "gap" && b?.row);
       const delta = (horizontal ? p.x - d.sx : p.y - d.sy) / cam.zoom;
       const value = Math.max(0, d.start + (d.key === "pb" || d.key === "pr" ? -delta : delta));
-      pendingStyle.current = { id: d.id, styles: { [FLEX_PROP[d.key]]: getView().snapPixel ? Math.round(value) : Math.round(value * 100) / 100 } };
-      flush();
+      sendFrame(d, { type: "setStyle", gesture: true, ids: [d.id], styles: { [FLEX_PROP[d.key]]: getView().snapPixel ? Math.round(value) : Math.round(value * 100) / 100 } });
     } else if (d.kind === "rotate") {
       const deg = Math.round(normalizeAngle(d.start + angleDeg(d.c, p) - d.a0, e.shiftKey ? 15 : 0) * 100) / 100;
-      pendingStyle.current = { id: d.id, styles: { rotate: deg ? `${deg}deg` : null } };
-      flush();
+      sendFrame(d, { type: "setStyle", gesture: true, ids: [d.id], styles: { rotate: deg ? `${deg}deg` : null } });
     } else if (d.kind === "zoom") {
       ui.current.marquee = fromPoints(d.sx, d.sy, p.x, p.y);
       requestDraw();
@@ -1052,21 +1062,19 @@ export function Canvas(props: {
       requestDraw();
     } else if (d.kind === "move") {
       if (d.started) {
-        while (sending.current || pendingDrag.current) await new Promise((r) => setTimeout(r, 4));
         const p = local(e);
         const w = toWorld(camRef.current, p.x, p.y);
-        await store.do({ type: "dragEnd", x: w.x, y: w.y, reparent: !e.metaKey && !e.ctrlKey });
+        const end = { type: "dragEnd", x: w.x, y: w.y, reparent: !e.metaKey && !e.ctrlKey };
+        await toServer(() => end);
         ui.current.guides = [];
         requestDraw();
       } else if (d.click && !e.shiftKey && store.selection.length > 1) store.select([d.click]);
     } else if (d.kind === "resize") {
-      while (sending.current || pendingResize.current) await new Promise((r) => setTimeout(r, 4));
-      await store.do({ type: "resizeEnd" });
+      await toServer(() => ({ type: "resizeEnd" }));
       ui.current.guides = [];
       requestDraw();
     } else if (d.kind === "flex" || d.kind === "rotate") {
-      while (sending.current || pendingStyle.current) await new Promise((r) => setTimeout(r, 4));
-      await store.do({ type: "commit" });
+      await toServer(() => ({ type: "commit" }));
       syncCursor();
     } else if (d.kind === "zoom") {
       const m = ui.current.marquee;
@@ -1133,6 +1141,7 @@ export function Canvas(props: {
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerCancel={cancelDrag}
         onPointerLeave={() => {
           if (store.hover && !drag.current) {
             store.hover = null;

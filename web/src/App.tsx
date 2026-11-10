@@ -29,6 +29,7 @@ export function App() {
   const [active, setActive] = useState<string>("home");
   const [error, setError] = useState<string | null>(null);
   const [saveErrors, setSaveErrors] = useState<Record<string, string>>({});
+  const [offline, setOffline] = useState(false);
   const [theme, setTheme] = useState(initialTheme);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [calls, setCalls] = useState<ToolCall[]>([]);
@@ -204,8 +205,9 @@ export function App() {
           .catch((e: Error) => conn.send({ t: "rendered", callId: call, ok: false, error: e.message }));
       }
     });
-    const offStatus = conn.onStatus((up) => {
-      if (!up) return;
+    const offStatus = conn.onStatus((status) => {
+      setOffline(status === "reconnecting");
+      if (status !== "open") return;
       for (const id of stores.keys()) openFile(id, false);
       conn.send({ t: "view", file: active === "home" ? null : active });
     });
@@ -231,6 +233,11 @@ export function App() {
         agents={agents}
         conn={conn}
       />
+      {offline && (
+        <div role="alert" className="shrink-0 border-b border-line bg-panel px-3 py-1.5 text-sm">
+          Spark lost its connection and is reconnecting. Changes you make now won't be saved.
+        </div>
+      )}
       {store && saveErrors[store.file.id] && (
         <div role="alert" className="shrink-0 border-b border-line bg-panel px-3 py-1.5 text-sm">
           Spark couldn't save this file: {saveErrors[store.file.id]}. Your changes are kept while Spark stays open and

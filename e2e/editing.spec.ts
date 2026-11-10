@@ -187,3 +187,25 @@ test("copy and paste, copy as code, layers and tokens", async ({ page }) => {
   await expect(page.getByTestId("code")).toContainText("--color-accent: var(--color-brand);");
   await expect(page.getByTestId("code")).toContainText("@theme {");
 });
+
+test("Escape during a drag puts the layer back and leaves undo alone", async ({ page }) => {
+  await newFile(page);
+  const b = await boardBox(page);
+  await page.keyboard.press("r");
+  await drag(page, [b.x + 50, b.y + 50], [b.x + 150, b.y + 150]);
+  const rect = page.locator('[data-kind="rect"]').first();
+  const r0 = await rect.boundingBox();
+  if (!r0) throw new Error("no rect");
+  await page.mouse.move(r0.x + r0.width / 2, r0.y + r0.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(r0.x + r0.width / 2 + 120, r0.y + r0.height / 2 + 80, { steps: 6 });
+  await expect.poll(async () => (await rect.boundingBox())?.x ?? 0).toBeGreaterThan(r0.x + 60);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect.poll(async () => (await rect.boundingBox())?.x ?? 0).toBeCloseTo(r0.x, 0);
+  // Escape didn't also climb to the parent: the rectangle is still selected.
+  await expect(layer(page, /Rectangle/)).toHaveAttribute("aria-selected", "true");
+  // The next undo removes the rectangle itself; the abandoned drag left no step behind.
+  await page.keyboard.press("ControlOrMeta+z");
+  await expect(rect).toHaveCount(0);
+});

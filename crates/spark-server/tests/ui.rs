@@ -601,3 +601,92 @@ async fn arrange_commands_align_distribute_ungroup_and_swap_colors() {
     // Colours serialize as OKLCH; red is hue ~29.
     assert!(patch["nodes"][&made[2]]["style"]["border"]["color"].as_str().unwrap().starts_with("oklch(0.628"));
 }
+
+/// A file with one 50x50 rect at (100, 100), measured. Returns (file, rect).
+async fn file_with_rect(ws: &mut Ws, seen: &mut Vec<Value>) -> (String, String) {
+    let id = request(ws, 1, json!({"t": "create", "name": "Gesture"}), seen).await["id"].as_str().unwrap().to_string();
+    let snap = request(ws, 2, json!({"t": "open", "ref": id}), seen).await;
+    let board = snap["nodes"].as_object().unwrap().keys().next().unwrap().clone();
+    let mk = json!({"type": "create", "kind": "rect", "parent": board, "x": 100, "y": 100, "w": 50, "h": 50});
+    let a = request(ws, 3, json!({"t": "do", "file": id, "cmd": mk}), seen).await["id"].as_str().unwrap().to_string();
+    let rects = json!({"t": "rects", "file": id, "rects": {board.as_str(): [0, 0, 1440, 1024], a.as_str(): [100, 100, 50, 50]}});
+    ws.send(Message::Text(rects.to_string().into())).await.unwrap();
+    (id, a)
+}
+
+#[tokio::test]
+async fn a_window_that_goes_away_mid_drag_takes_its_drag_with_it() {
+    let s = TestServer::start().await;
+    let mut ws = connect(&s, &s.token).await.unwrap();
+    let mut seen = Vec::new();
+    let (id, a) = file_with_rect(&mut ws, &mut seen).await;
+    let cmd = |c: Value| json!({"t": "do", "file": id, "cmd": c});
+    request(&mut ws, 4, cmd(json!({"type": "dragStart", "ids": [a]})), &mut seen).await;
+    request(&mut ws, 5, cmd(json!({"type": "drag", "dx": 40, "dy": 0, "snap": false})), &mut seen).await;
+    drop(ws); // no dragEnd
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+    let mut ws = connect(&s, &s.token).await.unwrap();
+    let snap = request(&mut ws, 6, json!({"t": "open", "ref": id}), &mut seen).await;
+    assert_eq!(snap["nodes"][a.as_str()]["css"]["left"], "100px", "the unfinished drag is reverted");
+    // Later edits are their own undo steps again.
+    request(&mut ws, 7, cmd(json!({"type": "setStyle", "ids": [a], "styles": {"opacity": 0.5}})), &mut seen).await;
+    request(&mut ws, 8, cmd(json!({"type": "set", "ids": [a], "prop": "name", "value": "Renamed"})), &mut seen).await;
+    request(&mut ws, 9, cmd(json!({"type": "undo"})), &mut seen).await;
+    let node = request(&mut ws, 10, json!({"t": "open", "ref": id}), &mut seen).await["nodes"][a.as_str()].clone();
+    assert_eq!((&node["name"], &node["css"]["opacity"]), (&json!("Rectangle"), &json!("0.5")));
+}
+
+#[tokio::test]
+async fn undo_during_a_drag_ends_the_drag() {
+    let s = TestServer::start().await;
+    let mut ws = connect(&s, &s.token).await.unwrap();
+    let mut seen = Vec::new();
+    let (id, a) = file_with_rect(&mut ws, &mut seen).await;
+    let cmd = |c: Value| json!({"t": "do", "file": id, "cmd": c});
+    request(&mut ws, 4, cmd(json!({"type": "dragStart", "ids": [a]})), &mut seen).await;
+    request(&mut ws, 5, cmd(json!({"type": "drag", "dx": 40, "dy": 0, "snap": false})), &mut seen).await;
+    request(&mut ws, 6, cmd(json!({"type": "undo"})), &mut seen).await;
+    // Frames still in flight are refused instead of each becoming an undo step.
+    let mut frame = cmd(json!({"type": "drag", "dx": 60, "dy": 0, "snap": false}));
+    frame["rid"] = json!(7);
+    ws.send(Message::Text(frame.to_string().into())).await.unwrap();
+    let reply = loop {
+        let v: Value = serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+        if v["rid"] == json!(7) {
+            break v;
+        }
+    };
+    assert_eq!(reply["error"], "no drag in progress");
+    let snap = request(&mut ws, 8, json!({"t": "open", "ref": id}), &mut seen).await;
+    assert_eq!(snap["nodes"][a.as_str()]["css"]["left"], "100px");
+    assert_eq!(snap["canUndo"], true, "creating the layer is still on the history");
+}
+
+#[tokio::test]
+async fn undo_during_a_rotate_drops_its_late_frames() {
+    let s = TestServer::start().await;
+    let mut ws = connect(&s, &s.token).await.unwrap();
+    let mut seen = Vec::new();
+    let (id, a) = file_with_rect(&mut ws, &mut seen).await;
+    let cmd = |c: Value| json!({"t": "do", "file": id, "cmd": c});
+    let frame =
+        |deg: i32| json!({"type": "setStyle", "gesture": true, "ids": [a], "styles": {"rotate": format!("{deg}deg")}});
+    request(&mut ws, 4, cmd(json!({"type": "begin"})), &mut seen).await;
+    request(&mut ws, 5, cmd(frame(10)), &mut seen).await;
+    request(&mut ws, 6, cmd(json!({"type": "undo"})), &mut seen).await;
+    for (rid, deg) in (7..17).zip(20..) {
+        let mut m = cmd(frame(deg));
+        m["rid"] = json!(rid);
+        ws.send(Message::Text(m.to_string().into())).await.unwrap();
+        let reply = loop {
+            let v: Value = serde_json::from_str(ws.next().await.unwrap().unwrap().to_text().unwrap()).unwrap();
+            if v["rid"] == json!(rid) {
+                break v;
+            }
+        };
+        assert_eq!(reply["error"], "no gesture in progress");
+    }
+    let snap = request(&mut ws, 20, json!({"t": "open", "ref": id}), &mut seen).await;
+    assert!(snap["nodes"][a.as_str()]["css"]["rotate"].is_null(), "{}", snap["nodes"][a.as_str()]);
+}
