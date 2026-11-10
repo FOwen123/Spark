@@ -1,6 +1,7 @@
 import { createContext, memo, useCallback, useContext, useLayoutEffect, useRef } from "react";
 import { type DocStore, useDetail, useKids, useNode } from "../lib/doc";
 import { safeAttrs, safeTag } from "../lib/svg";
+import type { ImageStatus } from "../lib/types";
 
 /** On the canvas, far-away or tiny artboards render as empty shells (level of detail). */
 export const LevelOfDetail = createContext(false);
@@ -24,7 +25,7 @@ function vectorMarkup(store: DocStore, ids: string[]): string {
     .join("");
 }
 
-function imageState(status: string | undefined) {
+function imageState(status: ImageStatus | undefined) {
   return status === "error" ? "Image failed" : status === "pending" ? "Waiting for an image" : "Generating image…";
 }
 

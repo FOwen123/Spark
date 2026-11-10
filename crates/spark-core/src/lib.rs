@@ -21,5 +21,5 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use doc::{Document, Op, OpError, Parent, Rect};
 pub use id::{NodeId, PageId};
-pub use node::{GuideKind, LayoutGuide, Node, NodeKind, Page};
+pub use node::{GuideKind, ImageStatus, LayoutGuide, Node, NodeKind, Page};
 pub use style::Style;

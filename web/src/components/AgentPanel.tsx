@@ -1,11 +1,11 @@
 import { Bot, Play, Plug, Square, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { DocStore } from "../lib/doc";
+import { isActive, startRun, stopRun, useAgentRun } from "../lib/runs";
 import type { Agent } from "../lib/types";
 import { ConnectDialog } from "./ConnectDialog";
 
 type Cli = { id: string; name: string; connected: boolean; needs: string | null };
-type Line = { run: number; kind: "out" | "err" | "info"; text: string };
 export type ToolCall = { agent: string; tool: string; ms: number; ok: boolean; error?: string; at: number };
 
 /** Readable lines from an agent's output (Claude Code's stream-json events, or plain text). */
@@ -30,11 +30,8 @@ export function AgentPanel({ store, agents, calls, onClose }: { store: DocStore;
   const [clis, setClis] = useState<Cli[]>([]);
   const [cli, setCli] = useState("");
   const [prompt, setPrompt] = useState("");
-  // The latest run, and whether it's still going. Output can arrive before the run id does, so
-  // every line is kept with its run id and filtered when shown.
-  const [run, setRun] = useState<number | null>(null);
-  const [running, setRunning] = useState(false);
-  const [lines, setLines] = useState<Line[]>([]);
+  const run = useAgentRun(store.file.id);
+  const running = isActive(run);
   const [connect, setConnect] = useState(false);
   const out = useRef<HTMLDivElement>(null);
 
@@ -45,38 +42,14 @@ export function AgentPanel({ store, agents, calls, onClose }: { store: DocStore;
     });
   }, [store]);
 
-  useEffect(() => {
-    return store.conn.on((m) => {
-      if (m.t !== "run") return;
-      const id = m.runId as number;
-      if (m.kind === "done") {
-        setLines((l) => [...l, { run: id, kind: "info", text: m.code === 0 ? "Finished." : `Exited with code ${m.code ?? "?"}.` }]);
-        setRunning(false);
-        return;
-      }
-      const text = m.kind === "out" ? readable(String(m.line)) : String(m.line);
-      if (text) setLines((l) => [...l.slice(-500), { run: id, kind: m.kind as "out" | "err", text }]);
-    });
-  }, [store]);
-
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll to the newest line
   useEffect(() => {
     out.current?.scrollTo({ top: out.current.scrollHeight });
-  }, [lines]);
+  }, [run?.lines]);
 
   const chosen = clis.find((c) => c.id === cli);
-  const start = async () => {
-    if (!prompt.trim() || !chosen) return;
-    setRunning(true);
-    try {
-      const r = await store.conn.request<{ runId: number }>({ t: "agentRun", file: store.file.id, agent: cli, prompt });
-      setRun(r.runId);
-      setLines((l) => [{ run: r.runId, kind: "info", text: `Running ${chosen.name}…` }, ...l.filter((x) => x.run === r.runId)]);
-    } catch (e) {
-      setRunning(false);
-      setRun(-1);
-      setLines([{ run: -1, kind: "err", text: (e as Error).message }]);
-    }
+  const start = () => {
+    if (prompt.trim() && chosen && !running) startRun(store.conn, store.file.id, cli, prompt, chosen.name);
   };
 
   return (
@@ -131,21 +104,26 @@ export function AgentPanel({ store, agents, calls, onClose }: { store: DocStore;
               />
               <button
                 type="button"
-                onClick={() => (running && run ? store.conn.request({ t: "agentStop", runId: run }) : start())}
+                onClick={() => (running ? stopRun(store.conn, store.file.id) : start())}
                 className="mt-1 flex h-7 w-full items-center justify-center gap-1.5 rounded-control bg-selected text-sm text-selected-fg"
               >
                 {running ? <Square size={12} /> : <Play size={12} />} {running ? "Stop" : "Run"}
               </button>
             </>
           )}
-          {run !== null && (
+          {run && (
             <div ref={out} data-testid="agent-output" className="mt-2 max-h-64 overflow-auto rounded-control bg-control p-2 font-mono text-xs leading-4 whitespace-pre-wrap select-text spark-scroll">
-              {lines.filter((l) => l.run === run).map((l, i) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: an append-only log
-                <div key={i} className={l.kind === "err" ? "text-fg-2" : l.kind === "info" ? "text-fg-3" : ""}>
-                  {l.text}
-                </div>
-              ))}
+              {run.lines.map((l, i) => {
+                const text = l.kind === "out" ? readable(l.text) : l.text;
+                return (
+                  text && (
+                    // biome-ignore lint/suspicious/noArrayIndexKey: an append-only log
+                    <div key={i} className={l.kind === "err" ? "text-fg-2" : l.kind === "info" ? "text-fg-3" : ""}>
+                      {text}
+                    </div>
+                  )
+                );
+              })}
             </div>
           )}
         </section>

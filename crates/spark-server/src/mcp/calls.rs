@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use base64::Engine;
 use serde_json::{Map, Value, json};
 use spark_core::{
-    Document, Node, NodeId, NodeKind, Op, PageId, Parent, Rect,
+    Document, ImageStatus, Node, NodeId, NodeKind, Op, PageId, Parent, Rect,
     codegen::{self, CodeOpts, Format, node_css},
     color::{Color, var_name},
     css::{apply_decl, camel},
@@ -302,7 +302,7 @@ fn file_tool(app: &AppState, session: &str, d: &mut OpenDoc, name: &str, args: &
                 info["tag"] = json!(n.tag);
             }
             if let Some(img) = &n.image {
-                info["imageGeneration"] = json!({"status": match img["status"].as_str() { Some("pending") => "pending", Some("error") => "error", Some("ready") => "ready", _ => "processing" }, "output": "raster", "requestId": img["id"], "error": img["error"]});
+                info["imageGeneration"] = json!({"status": ImageStatus::of(img).as_str(), "output": "raster", "requestId": img["id"], "error": img["error"]});
             }
             app.hub.agent_activity(session, &file, &[], &[id], false);
             ok_json(d, info)
@@ -392,7 +392,7 @@ fn file_tool(app: &AppState, session: &str, d: &mut OpenDoc, name: &str, args: &
                 for id in doc.descendants(Parent::Page(p.id)) {
                     let n = doc.node(id).unwrap();
                     let Some(img) = &n.image else { continue };
-                    if img["status"] == "pending" {
+                    if ImageStatus::of(img) == ImageStatus::Pending {
                         let r = doc.measured.get(&id);
                         list.push(json!({
                             "requestId": img["id"], "nodeId": id, "name": n.name, "prompt": img["prompt"],
@@ -698,7 +698,7 @@ fn fill_image(d: &OpenDoc, args: &Value) -> R<Content> {
     let id = node_id(req(args, "nodeId")?)?;
     let doc = &d.editor.doc;
     let n = live(doc, id)?;
-    if n.image.as_ref().is_some_and(|i| i["status"] != "ready") {
+    if n.image.as_ref().is_some_and(|i| ImageStatus::of(i) != ImageStatus::Ready) {
         return ok_json(
             d,
             json!({"message": "this layer's image is still being generated or requested; try again later"}),
@@ -1263,7 +1263,12 @@ async fn fulfill(app: &AppState, session: &str, args: &Value) -> R<Content> {
         let d = doc.lock().unwrap();
         let id = crate::generate::node_for_request(&d.editor.doc, &request)
             .ok_or_else(|| format!("no image request {request}; call list_image_requests"))?;
-        if d.editor.doc.node(id).and_then(|n| n.image.as_ref()).is_some_and(|i| i["status"] == "ready") {
+        if d.editor
+            .doc
+            .node(id)
+            .and_then(|n| n.image.as_ref())
+            .is_some_and(|i| ImageStatus::of(i) == ImageStatus::Ready)
+        {
             return Err(format!("image request {request} is already fulfilled"));
         }
     }

@@ -25,8 +25,8 @@ pub struct OpenDoc {
     pub path: PathBuf,
     /// UI clients viewing this document.
     pub subscribers: HashMap<ClientId, Tx>,
-    /// The drag or resize in progress, if any.
-    pub session: Option<crate::edit::Session>,
+    /// The pointer gesture in progress, if any.
+    pub gesture: Option<crate::edit::Gesture>,
     /// When the document last changed (for checkpointing once edits pause).
     pub last_write: Instant,
     /// Why the last save failed; edits stay in memory and saving retries on the next change.
@@ -67,6 +67,22 @@ impl OpenDoc {
         self.save(ops);
         let patch = views::patch(self, ops);
         self.broadcast(&patch);
+    }
+
+    /// Commits the gesture in progress, if any, as one undo step.
+    pub fn end_gesture(&mut self) {
+        if self.gesture.take().is_some() {
+            self.editor.commit();
+        }
+    }
+
+    /// Forgets a window: its subscription, and the gesture it was in the middle of (reverted).
+    pub fn drop_client(&mut self, client: ClientId) {
+        self.subscribers.remove(&client);
+        if self.gesture.take_if(|g| g.by == client).is_some() {
+            let undo = self.editor.cancel();
+            self.commit_ops(&undo);
+        }
     }
 
     pub fn file_info(&self) -> Value {
@@ -160,7 +176,7 @@ impl Hub {
         self.clients.lock().unwrap().remove(&id);
         self.viewing.lock().unwrap().retain(|(c, _)| *c != id);
         for doc in self.open_docs() {
-            doc.lock().unwrap().subscribers.remove(&id);
+            doc.lock().unwrap().drop_client(id);
         }
     }
 
@@ -226,7 +242,8 @@ impl Hub {
     pub fn rename(&self, id: &str, name: &str) -> Result<(), String> {
         let doc = self.open_ref(id)?;
         let mut d = doc.lock().unwrap();
-        let (_, ops) = crate::commands::run(&mut d, &json!({"type": "renameFile", "name": name}))?;
+        // Client 0: no window is behind this command.
+        let (_, ops) = crate::commands::run(&mut d, 0, &json!({"type": "renameFile", "name": name}))?;
         d.commit_ops(&ops);
         self.config.remember(&d.editor.doc.id, &d.editor.doc.name, &d.path);
         Ok(())
@@ -276,7 +293,7 @@ impl Hub {
             store,
             path: path.to_path_buf(),
             subscribers: HashMap::new(),
-            session: None,
+            gesture: None,
             last_write: Instant::now(),
             save_error: None,
         }));
@@ -291,6 +308,7 @@ impl Hub {
             return Ok(d);
         }
         let (mut store, mut doc) = Store::open(&path).map_err(|e| format!("can't open {}: {e}", path.display()))?;
+        crate::generate::fail_interrupted(&mut doc);
         if self.get(&doc.id).is_some() {
             // A copy of an open file (duplicated on disk) gets its own id, so edits reach the copy.
             doc.id = spark_core::id::new_file_id();
@@ -624,5 +642,26 @@ mod tests {
         let reopened = hub2.open_ref(&id).unwrap();
         assert_eq!(reopened.lock().unwrap().editor.doc.node_count(), 1);
         assert!(hub2.open_ref("nonsense").is_err());
+    }
+
+    #[test]
+    fn an_image_job_cut_off_by_closing_is_failed_when_the_file_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = || Config::load(dir.path().join("c"), dir.path().join("f")).unwrap();
+        let hub = Hub::new(config());
+        let doc = hub.create("Images").unwrap();
+        let (file, board) = {
+            let mut d = doc.lock().unwrap();
+            let board = d.editor.doc.all_nodes().next().unwrap().id;
+            let job = json!({"id": "img-1", "status": "processing"});
+            let ops = d.editor.transact(vec![Op::Set { id: board, prop: "image".into(), value: job }], None).unwrap();
+            d.save(&ops);
+            (d.id().to_string(), board)
+        };
+        drop((doc, hub)); // the app quits with the job still running
+        let reopened = Hub::new(config()).open_ref(&file).unwrap();
+        let image = reopened.lock().unwrap().editor.doc.node(board).unwrap().image.clone().unwrap();
+        assert_eq!(image["status"], "error");
+        assert!(image["error"].as_str().unwrap().contains("closed"));
     }
 }

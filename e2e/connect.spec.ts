@@ -52,3 +52,19 @@ test("the agent panel runs a local agent CLI and logs tool calls", async ({ page
   await expect(panel).toContainText("Logger");
   await agent.close();
 });
+
+test("a running agent keeps its Stop button when the panel closes and reopens", async ({ page }) => {
+  await newFile(page);
+  await page.keyboard.press("ControlOrMeta+j");
+  const panel = page.getByRole("complementary", { name: "Agent panel" });
+  await panel.getByLabel("Prompt").fill("Make a hero section, take your time");
+  await panel.getByRole("button", { name: "Run" }).click();
+  await expect(panel.getByTestId("agent-output")).toContainText("▸ get_basic_info");
+  await page.keyboard.press("ControlOrMeta+j");
+  await expect(panel).toHaveCount(0);
+  await page.keyboard.press("ControlOrMeta+j");
+  await expect(panel.getByTestId("agent-output")).toContainText("▸ get_basic_info");
+  await panel.getByRole("button", { name: "Stop" }).click();
+  await expect(panel.getByTestId("agent-output")).toContainText("Stopped.");
+  await expect(panel.getByRole("button", { name: "Run" })).toBeVisible();
+});

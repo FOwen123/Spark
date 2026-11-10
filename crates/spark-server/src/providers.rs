@@ -4,7 +4,7 @@
 use std::{collections::HashMap, sync::Arc, sync::Mutex};
 
 use serde_json::{Value, json};
-use spark_core::html::ImageSrc;
+use spark_core::{ImageStatus, html::ImageSrc};
 
 use crate::{hub::Hub, images, settings::Settings};
 
@@ -88,11 +88,11 @@ fn request_id() -> String {
 pub struct JobQueue(pub Mutex<Vec<(String, GenUrl)>>);
 
 /// The image state stored on a placeholder node, with a default size from the aspect ratio.
-fn job_json(g: &GenUrl, id: &str, status: &str) -> Value {
+fn job_json(g: &GenUrl, id: &str, status: ImageStatus) -> Value {
     let (w, h) = ratio(&g.aspect_ratio).unwrap_or((1.0, 1.0));
     let width = 512.0;
     json!({
-        "id": id, "status": status, "provider": g.provider, "model": g.model, "prompt": g.prompt,
+        "id": id, "status": status.as_str(), "provider": g.provider, "model": g.model, "prompt": g.prompt,
         "aspectRatio": g.aspect_ratio, "referenceNodes": g.reference_nodes,
         "width": width, "height": (width * h / w).round(),
     })
@@ -112,13 +112,13 @@ pub fn resolver<'a>(
             };
             let id = request_id();
             if g.provider == "agent" {
-                return ImageSrc::Job(job_json(&g, &id, "pending"));
+                return ImageSrc::Job(job_json(&g, &id, ImageStatus::Pending));
             }
             if let Err(e) = crate::generate::check_enabled(settings, &g.provider) {
                 return ImageSrc::Failed(e);
             }
             jobs.0.lock().unwrap().push((id.clone(), g.clone()));
-            return ImageSrc::Job(job_json(&g, &id, "processing"));
+            return ImageSrc::Job(job_json(&g, &id, ImageStatus::Processing));
         }
         match loaded.get(url) {
             Some(l) => images::to_src(url, l),

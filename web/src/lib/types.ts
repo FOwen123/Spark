@@ -55,6 +55,9 @@ export type LayoutGuide = { kind: "columns" | "rows" | "grid"; count: number; gu
 
 export type ExportPreset = { format: string; scale: string; suffix?: string; quality?: number };
 
+/** Where a requested or generated image stands; anything but `ready` shows a placeholder. */
+export type ImageStatus = "pending" | "processing" | "ready" | "error";
+
 export type NodeView = {
   id: string;
   kind: NodeKind;
@@ -67,7 +70,7 @@ export type NodeView = {
   style: Style;
   exports?: ExportPreset[];
   layoutGuides?: LayoutGuide[];
-  image?: { status?: string; prompt?: string; [k: string]: unknown };
+  image?: { status?: ImageStatus; prompt?: string; [k: string]: unknown };
   parent: string;
   key: string;
   css: Record<string, string>;
