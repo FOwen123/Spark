@@ -336,8 +336,11 @@ test("font picker stays fast with thousands of families", async ({ page }) => {
     const list = page.getByTestId("font-list");
     await expect(list.getByTestId("font-row").first()).toBeVisible();
     expect(await list.getByTestId("font-row").count()).toBeLessThan(40);
-    await list.evaluate((el) => el.scrollTo(0, el.scrollHeight));
-    await expect(list.getByRole("button", { name: /^Family 2499/ })).toBeVisible();
+    // The catalog may still be arriving, so scroll again until the last family is in view.
+    await expect(async () => {
+      await list.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+      await expect(list.getByRole("button", { name: /^Family 2499/ })).toBeVisible({ timeout: 500 });
+    }).toPass();
     expect(await list.getByTestId("font-row").count()).toBeLessThan(40);
     await page.getByLabel("Search fonts").fill("Family 1234");
     await expect(list.getByTestId("font-row")).toHaveCount(1);
