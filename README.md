@@ -5,7 +5,7 @@
 
 # Spark
 
-Spark is a local-first design tool for working with AI agents. Designs are real HTML and CSS, so what you draw is what ships. The document core is Rust, files live on your disk as `.spark` files, and any MCP-capable agent (Claude Code, Codex, Cursor, VS Code, OpenCode, Gemini CLI and others) can read and edit the canvas while you watch. The interface is black, white and gray.
+Spark is an opensource design tool for working with AI agents. Designs are real HTML and CSS, so what you draw is what ships. The document core is Rust, files live on your disk as `.spark` files, and any MCP-capable agent (Claude Code, Codex, Cursor, VS Code, OpenCode, Gemini CLI and others) can read and edit the canvas while you watch. The interface is black, white and gray.
 
 ![Spark editing a landing page while an agent works](docs/images/editor-light.png)
 
