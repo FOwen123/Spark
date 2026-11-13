@@ -1,0 +1,103 @@
+# Checks every pull request and builds the Mac app for Apple Silicon.
+# - Pull requests and manual runs (Actions > Build > Run workflow): `bun run verify`, then an
+#   unsigned Spark .dmg attached to the run as an artifact.
+# - Pushing a tag like v0.2.0 (matching the version in Cargo.toml) does the same, signs and
+#   notarizes the app when the APPLE_* secrets are set, and puts the .dmg in a draft release.
+name: Build
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    tags: ["v*"]
+
+# A new push to a pull request cancels its run still going; releases finish.
+concurrency:
+  group: build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: swatinem/rust-cache@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install chromium webkit
+      - run: bun run verify
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-traces
+          path: test-results/
+
+  app:
+    needs: verify
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the tag matches the version (releases)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: grep -q "^version = \"${GITHUB_REF_NAME#v}\"" Cargo.toml || { echo "Set version = \"${GITHUB_REF_NAME#v}\" in Cargo.toml first"; exit 1; }
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+      - run: bun install --frozen-lockfile
+
+      # Tauri tries to sign with an empty APPLE_CERTIFICATE too, so the certificate goes into a
+      # keychain here and only the other settings are passed on, when the secrets exist.
+      # Pull requests stay unsigned: no wait on Apple for builds never shipped.
+      - name: Use the Apple signing secrets
+        if: github.event_name != 'pull_request'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          [ -n "$APPLE_CERTIFICATE" ] || exit 0
+          KEYCHAIN="$RUNNER_TEMP/spark-signing.keychain-db"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p spark "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p spark "$KEYCHAIN"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          rm "$RUNNER_TEMP/cert.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k spark "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          for name in APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
+          done
+
+      - run: bun run --cwd apps/desktop build
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: spark-macos
+          path: target/release/bundle/dmg/*.dmg
+
+      - name: Draft the release (releases)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --draft --title "Spark $GITHUB_REF_NAME" --generate-notes target/release/bundle/dmg/*.dmg

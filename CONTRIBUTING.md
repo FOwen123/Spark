@@ -39,6 +39,18 @@ Commit in small steps with [Conventional Commit](https://www.conventionalcommits
 
 Open a PR against `main` with one focused change. Say what changed and how you tested it, and add before and after screenshots for anything visible. If you work with a coding agent, [AGENTS.md](AGENTS.md) gives it the same rules.
 
+## Builds and releases
+
+`.github/workflows/build.yml` runs `bun run verify` on every pull request, then builds the Mac app for Apple Silicon and attaches an unsigned `.dmg` to the run.
+
+To release:
+
+1. Set the new `version` in the root `Cargo.toml` and merge it.
+2. Push a matching tag: `git tag v0.2.0 && git push origin v0.2.0`.
+3. The workflow signs and notarizes the app, then puts the `.dmg` in a draft release. Review it and publish.
+
+Signing needs a Developer ID Application certificate and an app-specific password for notarization, stored as repository secrets: `APPLE_CERTIFICATE` (the `.p12`, base64), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID`. Without them, a tag still builds, but the app is unsigned.
+
 ## Where things are
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how the pieces fit, and [docs/DECISIONS.md](docs/DECISIONS.md) for choices made where the spec left room.
