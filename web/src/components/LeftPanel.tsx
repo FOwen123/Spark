@@ -181,10 +181,10 @@ function LayerRow(props: {
         className={`group relative flex h-[var(--row-h)] cursor-default items-center gap-1.5 pr-2 text-base ${
           selected ? "bg-selected text-selected-fg" : parentSelected ? "bg-hover" : "hover:bg-hover"
         } ${n.hidden ? "opacity-50" : ""} ${marker === "inside" ? "outline outline-1 -outline-offset-1 outline-fg" : ""}`}
-        style={{ paddingLeft: 2 + depth * 16 }}
+        style={{ paddingLeft: 6 + depth * 16 }}
       >
         {marker && marker !== "inside" && (
-          <div className={`pointer-events-none absolute right-0 left-0 h-0.5 bg-fg ${marker === "before" ? "top-0" : "bottom-0"}`} style={{ left: 2 + depth * 16 }} />
+          <div className={`pointer-events-none absolute right-0 left-0 h-0.5 bg-fg ${marker === "before" ? "top-0" : "bottom-0"}`} style={{ left: 6 + depth * 16 }} />
         )}
         <button
           type="button"
@@ -194,7 +194,7 @@ function LayerRow(props: {
             e.stopPropagation();
             props.toggle(id);
           }}
-          className={`grid size-3 shrink-0 place-items-center ${kids.length ? "" : "invisible"}`}
+          className={`-mr-1 grid size-3 shrink-0 place-items-center ${kids.length ? "" : "invisible"}`}
         >
           <ChevronRight size={12} className={open ? "rotate-90" : ""} />
         </button>
@@ -283,9 +283,9 @@ function Pages({ store, agents }: { store: DocStore; agents: Agent[] }) {
   const mark = (id: string) => (drag && drag.over === id && drag.id !== id ? (drag.where === "before" ? "shadow-[inset_0_2px_0_var(--spark-fg)]" : "shadow-[inset_0_-2px_0_var(--spark-fg)]") : "");
   return (
     <section aria-label="Pages" className="border-b border-line pb-1">
-      <div className="flex h-[var(--row-h)] items-center justify-between pr-1 pl-0.5 text-base font-medium">
-        {/* Chevron at x 2 like the layer rows' chevrons, label at x 20 like the page icons. */}
-        <button type="button" aria-expanded={!p.pagesCollapsed} onClick={() => setPrefs({ pagesCollapsed: !p.pagesCollapsed })} className="flex h-6 items-center gap-1.5 rounded-control pr-2 hover:bg-hover">
+      <div className="flex h-[var(--row-h)] items-center justify-between pr-1 pl-1.5 text-base font-medium">
+        {/* Chevron at x 6 like the layer rows' chevrons, label at x 20 like the page icons. */}
+        <button type="button" aria-expanded={!p.pagesCollapsed} onClick={() => setPrefs({ pagesCollapsed: !p.pagesCollapsed })} className="flex h-6 items-center gap-0.5 rounded-control pr-2 hover:bg-hover">
           {p.pagesCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           Pages
         </button>
