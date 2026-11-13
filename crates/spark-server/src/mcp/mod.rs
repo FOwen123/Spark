@@ -85,6 +85,9 @@ pub async fn get() -> Response {
 }
 
 pub async fn delete(State(app): State<AppState>, headers: HeaderMap) -> Response {
+    if !app.token_ok(&headers, None) {
+        return unauthorized();
+    }
     if let Some(id) = headers.get(SESSION_HEADER).and_then(|v| v.to_str().ok()) {
         sessions().lock().unwrap().remove(id);
         app.hub.remove_agent(id);

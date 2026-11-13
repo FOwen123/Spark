@@ -73,6 +73,12 @@ async fn protocol_basics_and_auth() {
 
     let (status, _) = s.http("GET", "/mcp", &[("Authorization", &format!("Bearer {}", s.token))], "").await;
     assert_eq!(status, 405);
+    let (status, _) = s.http("DELETE", "/mcp", &[("Mcp-Session-Id", "x")], "").await;
+    assert_eq!(status, 401);
+    let (status, _) = s
+        .http("DELETE", "/mcp", &[("Authorization", &format!("Bearer {}", s.token)), ("Mcp-Session-Id", "x")], "")
+        .await;
+    assert_eq!(status, 200);
     let (status, body) =
         s.http("GET", "/mcp/config.json", &[("Authorization", &format!("Bearer {}", s.token))], "").await;
     assert_eq!(status, 200);
