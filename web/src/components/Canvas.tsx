@@ -476,6 +476,19 @@ export function Canvas(props: {
     [store, measure],
   );
 
+  // A measurement sent a frame later would reach the server after the next command and roll its
+  // layout back to before that command, so commands send it first (see DocStore.do).
+  useEffect(() => {
+    store.flushMeasure = () => {
+      if (!measureFrame.current) return;
+      cancelAnimationFrame(measureFrame.current);
+      measure();
+    };
+    return () => {
+      store.flushMeasure = undefined;
+    };
+  }, [store, measure]);
+
   useEffect(() => {
     scheduleMeasure("all");
     loadFonts(store);
