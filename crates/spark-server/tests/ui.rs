@@ -38,6 +38,13 @@ async fn rejects_bad_tokens_origins_and_hosts() {
     let origin = format!("http://127.0.0.1:{}", s.port);
     let (status, _) = s.http("GET", "/health", &[("Origin", &origin)], "").await;
     assert_eq!(status, 200);
+    // Font routes take no token, so pages from other sites are turned away by the browser's own label.
+    let (status, _) = s.http("GET", "/fonts/file/a.woff2", &[("Sec-Fetch-Site", "cross-site")], "").await;
+    assert_eq!(status, 403);
+    let (status, _) = s.http("GET", "/fonts/css", &[("Sec-Fetch-Site", "same-site")], "").await;
+    assert_eq!(status, 403);
+    let (status, _) = s.http("GET", "/fonts/css", &[("Sec-Fetch-Site", "same-origin")], "").await;
+    assert_eq!(status, 400);
     let (status, body) = s.http("GET", "/.well-known/oauth-authorization-server", &[], "").await;
     assert_eq!(status, 404);
     assert!(!body.contains("error"));

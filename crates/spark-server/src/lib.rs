@@ -93,6 +93,13 @@ async fn guard(State(app): State<AppState>, req: Request, next: Next) -> Respons
     {
         return (StatusCode::FORBIDDEN, "forbidden origin").into_response();
     }
+    // Font requests carry no token and can make Spark download, so only Spark's own pages may send
+    // them. Browsers label every request with where it came from; other clients send no label.
+    if req.uri().path().starts_with("/fonts/")
+        && headers.get("sec-fetch-site").is_some_and(|v| !matches!(v.as_bytes(), b"same-origin" | b"none"))
+    {
+        return (StatusCode::FORBIDDEN, "forbidden site").into_response();
+    }
     let mut res = next.run(req).await;
     // Only Spark's own script files run in its pages, so markup inside a design (an SVG event
     // attribute, say) can never act as the UI.

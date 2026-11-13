@@ -36,7 +36,7 @@ Spark is three Rust crates, a React UI and a Tauri shell. The document lives in 
 - **Rendering and export** (`export.rs`, `layout.rs`): screenshots and raster exports render in a connected UI (off screen); without one, Rust renders its own SVG with resvg. PDFs go through krilla. When nothing has measured a page, taffy lays it out with real font metrics.
 - **Fonts** (`fonts.rs`): installed fonts, plus any Google Fonts family a design names. `/fonts/list` names the installed and Google families for the UI's font picker; `/fonts/css?family=…` downloads its `@font-face` rules once and points them at `/fonts/file/…`, which downloads each font file on first use; both are cached in the config dir.
 - **Agents and images** (`relay.rs`, `connect.rs`, `runner.rs`, `providers.rs`, `generate.rs`): the stdio relay, config writers for each agent, the agent panel's CLI runner, image requests, and provider adapters behind a cost guard. Provider keys live in the OS keychain.
-- **Security**: the server binds 127.0.0.1, every `/ui` and `/mcp` request needs the token stored in the config dir with mode 0600, foreign `Origin` headers are refused, and agents can only read images from folders the user granted.
+- **Security**: the server binds 127.0.0.1, every `/ui` and `/mcp` request needs the token stored in the config dir with mode 0600, foreign `Origin` headers are refused, `/fonts/*` refuses requests a browser labels as cross-site, and agents can only read images from folders the user granted.
 
 ## web
 
