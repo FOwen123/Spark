@@ -208,8 +208,14 @@ test("dragging outside a corner rotates, Shift snaps to 15 degrees", async ({ pa
   const cx = r.x + r.width / 2;
   const cy = r.y + r.height / 2;
 
-  await page.mouse.move(...corner);
-  await expect.poll(() => page.getByTestId("canvas").evaluate((el) => (el as HTMLElement).style.cursor)).toContain("svg");
+  // The cursor is picked on pointer moves, and the new rect's handles may not be measured yet, so hover again until it shows.
+  await expect
+    .poll(async () => {
+      await page.mouse.move(corner[0] - 1, corner[1]);
+      await page.mouse.move(...corner);
+      return page.getByTestId("canvas").evaluate((el) => (el as HTMLElement).style.cursor);
+    })
+    .toContain("svg");
   // Quarter turn clockwise: from the bottom-right corner to the bottom-left.
   const from = Math.atan2(corner[1] - cy, corner[0] - cx);
   const to = from + Math.PI / 2 + 0.1;
