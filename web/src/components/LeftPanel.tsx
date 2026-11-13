@@ -103,6 +103,8 @@ function LayerRow(props: {
   expanded: Set<string>;
   toggle: (id: string) => void;
   drag: LayerDrag;
+  /** The live drag for the handlers; `drag` lags a render behind. */
+  live: React.RefObject<LayerDrag>;
   setDrag: (d: LayerDrag) => void;
   /** While searching: the rows to show (matches and their ancestors). */
   filter: Set<string> | null;
@@ -141,6 +143,7 @@ function LayerRow(props: {
           props.setDrag({ id, over: null, where: "after" });
         }}
         onDragOver={(e) => {
+          const d = props.live.current;
           if (!d) return;
           e.preventDefault();
           const r = e.currentTarget.getBoundingClientRect();
@@ -150,6 +153,7 @@ function LayerRow(props: {
         }}
         onDrop={(e) => {
           e.preventDefault();
+          const d = props.live.current;
           if (!d || d.id === id) return props.setDrag(null);
           const ids = store.selection.includes(d.id) ? store.selection : [d.id];
           if (d.where === "inside") store.do({ type: "move", ids, parent: id, index: 0 });
@@ -249,7 +253,13 @@ function Pages({ store, agents }: { store: DocStore; agents: Agent[] }) {
   useDoc(store);
   const p = usePrefs();
   const [renaming, setRenaming] = useState<string | null>(null);
-  const [drag, setDrag] = useState<PageDrag>(null);
+  const [drag, setDragState] = useState<PageDrag>(null);
+  // Drag events can arrive before React re-renders, so the handlers read this instead of state.
+  const live = useRef<PageDrag>(null);
+  const setDrag = (d: PageDrag) => {
+    live.current = d;
+    setDragState(d);
+  };
   // Pages with an agent working on one of their artboards.
   const busy = new Set<string>();
   for (const a of agents) for (const id of a.files[store.file.id] ?? []) busy.add(store.pageOf(id) ?? store.nodes.get(id)?.parent ?? "");
@@ -263,6 +273,7 @@ function Pages({ store, agents }: { store: DocStore; agents: Agent[] }) {
       setDrag({ id, over: null, where: "after" });
     },
     onDragOver: (e: React.DragEvent) => {
+      const drag = live.current;
       if (!drag) return;
       e.preventDefault();
       const r = e.currentTarget.getBoundingClientRect();
@@ -271,6 +282,7 @@ function Pages({ store, agents }: { store: DocStore; agents: Agent[] }) {
     },
     onDrop: (e: React.DragEvent) => {
       e.preventDefault();
+      const drag = live.current;
       if (drag && drag.id !== id) {
         const rest = store.pages.filter((x) => x.id !== drag.id);
         const at = rest.findIndex((x) => x.id === id);
@@ -491,7 +503,13 @@ export function LeftPanel({ store, menu, agents, run }: { store: DocStore; menu:
   useDoc(store);
   const top = useKids(store, store.page);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [drag, setDrag] = useState<LayerDrag>(null);
+  const [drag, setDragState] = useState<LayerDrag>(null);
+  // Drag events can arrive before React re-renders, so the handlers read this instead of state.
+  const live = useRef<LayerDrag>(null);
+  const setDrag = (d: LayerDrag) => {
+    live.current = d;
+    setDragState(d);
+  };
   const [tab, setTab] = useState<"Design" | "Theme">("Design");
   // null: search closed.
   const [query, setQuery] = useState<string | null>(null);
@@ -583,7 +601,7 @@ export function LeftPanel({ store, menu, agents, run }: { store: DocStore; menu:
               }}
             >
               {[...top].reverse().map((id) => (
-                <LayerRow key={id} store={store} id={id} depth={0} expanded={expanded} toggle={toggle} drag={drag} setDrag={setDrag} filter={found?.show ?? null} />
+                <LayerRow key={id} store={store} id={id} depth={0} expanded={expanded} toggle={toggle} drag={drag} live={live} setDrag={setDrag} filter={found?.show ?? null} />
               ))}
             </div>
           </CanvasMenu>

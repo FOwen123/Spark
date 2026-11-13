@@ -193,7 +193,7 @@ test("artboard, page, and panel shortcuts", async ({ page }) => {
   // Duplicate the artboard, then N / Shift+N move between the two.
   await layer(page, /./).first().click();
   await page.keyboard.press("ControlOrMeta+d");
-  await expect(page.locator("[data-node]").first()).toBeVisible();
+  await expect(page.locator('[role="treeitem"][aria-level="1"]')).toHaveCount(2);
   await page.keyboard.press("Escape");
   await page.keyboard.press("n");
   const a = await picked(page);

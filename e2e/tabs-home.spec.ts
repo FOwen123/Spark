@@ -20,6 +20,11 @@ async function addFile(page: Page, name: string) {
   await expect(tab).toHaveText(name);
 }
 
+// "Copy link" writes to the system clipboard, which bundled Chromium refuses without the permission.
+test.beforeEach(async ({ context, browserName }) => {
+  if (browserName === "chromium") await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+});
+
 test("tabs: context menu, drag to reorder, reopen and hotkeys", async ({ page }) => {
   await page.goto(appUrl());
   const [a, b, c] = [`a-${uid()}`, `b-${uid()}`, `c-${uid()}`];

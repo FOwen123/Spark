@@ -223,8 +223,13 @@ export class DocStore {
     this.emit();
   }
 
+  /** Sends the canvas's measurement still waiting for its frame; set by the canvas. */
+  flushMeasure?: () => void;
+
   /** Sends an editing intent to the server. */
   do<T = unknown>(cmd: Record<string, unknown>): Promise<T> {
+    // Commands like align read the server's layout, so a report of the current one goes first.
+    this.flushMeasure?.();
     return this.conn.request<T>({ t: "do", file: this.file.id, cmd });
   }
 
