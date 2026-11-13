@@ -340,3 +340,44 @@ test("reduce-motion, deep select and nudge steps from Settings", async ({ page }
   await page.keyboard.press("Shift+ArrowRight");
   await expect(x).toHaveValue(String(x0 + 23));
 });
+
+test("side panels resize from their inner edges and keep the width; section chevrons line up", async ({ page }) => {
+  await newFile(page);
+  const left = page.getByRole("complementary", { name: "Pages and layers" });
+  const right = page.getByRole("complementary", { name: "Inspector" });
+  const width = async (panel: typeof left) => (await panel.boundingBox())?.width;
+
+  // The Pages chevron sits in the same column as the layer rows' chevrons.
+  const leftOf = (l: ReturnType<Page["locator"]>) => l.evaluate((el) => el.getBoundingClientRect().left);
+  const pagesChevron = pagesPanel(page).getByRole("button", { name: "Pages" }).locator("svg");
+  const layerChevron = page.getByRole("tree", { name: "Layers" }).locator('button[aria-label="Expand"], button[aria-label="Collapse"]').first();
+  expect(await leftOf(pagesChevron)).toBe(await leftOf(layerChevron));
+
+  async function drag(name: string, toX: number) {
+    const h = await page.getByRole("separator", { name }).boundingBox();
+    if (!h) throw new Error(`no ${name} handle`);
+    await page.mouse.move(h.x + h.width / 2, h.y + 300);
+    await page.mouse.down();
+    await page.mouse.move(toX, h.y + 300, { steps: 6 });
+    await page.mouse.up();
+  }
+
+  // Dragging clamps to each panel's range, and the canvas takes the rest.
+  await drag("Resize pages and layers", 1000);
+  await expect.poll(() => width(left)).toBe(480);
+  await drag("Resize pages and layers", 0);
+  await expect.poll(() => width(left)).toBe(160);
+  await drag("Resize inspector", 0);
+  await expect.poll(() => width(right)).toBe(480);
+  await shots(page, "resized-panels");
+
+  // Arrow keys step the focused handle by 8px.
+  await page.getByRole("separator", { name: "Resize inspector" }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect.poll(() => width(right)).toBe(472);
+
+  // Widths survive a reload.
+  await page.reload();
+  await expect.poll(() => width(left)).toBe(160);
+  await expect.poll(() => width(right)).toBe(472);
+});

@@ -40,6 +40,7 @@ import { comboFor } from "../lib/keymap";
 import { setPrefs, usePrefs } from "../lib/prefs";
 import type { Agent, NodeView } from "../lib/types";
 import { CanvasMenu, Item, menuItem } from "./CanvasMenu";
+import { PanelResizer } from "./PanelResizer";
 import { Keycaps, Tip } from "./Tip";
 import { TokensView } from "./inspector/Tokens";
 
@@ -282,8 +283,9 @@ function Pages({ store, agents }: { store: DocStore; agents: Agent[] }) {
   const mark = (id: string) => (drag && drag.over === id && drag.id !== id ? (drag.where === "before" ? "shadow-[inset_0_2px_0_var(--spark-fg)]" : "shadow-[inset_0_-2px_0_var(--spark-fg)]") : "");
   return (
     <section aria-label="Pages" className="border-b border-line pb-1">
-      <div className="flex h-[var(--row-h)] items-center justify-between pr-1 pl-2 text-base font-medium">
-        <button type="button" aria-expanded={!p.pagesCollapsed} onClick={() => setPrefs({ pagesCollapsed: !p.pagesCollapsed })} className="flex h-6 items-center gap-1 rounded-control pr-2 pl-1 hover:bg-hover">
+      <div className="flex h-[var(--row-h)] items-center justify-between pr-1 pl-0.5 text-base font-medium">
+        {/* Chevron at x 2 like the layer rows' chevrons, label at x 20 like the page icons. */}
+        <button type="button" aria-expanded={!p.pagesCollapsed} onClick={() => setPrefs({ pagesCollapsed: !p.pagesCollapsed })} className="flex h-6 items-center gap-1.5 rounded-control pr-2 hover:bg-hover">
           {p.pagesCollapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           Pages
         </button>
@@ -525,7 +527,8 @@ export function LeftPanel({ store, menu, agents, run }: { store: DocStore; menu:
     setExpanded(next);
   };
   return (
-    <aside className="flex w-[var(--left-w)] shrink-0 flex-col bg-panel" aria-label="Pages and layers">
+    <aside className="relative flex w-[var(--left-w)] shrink-0 flex-col bg-panel" aria-label="Pages and layers">
+      <PanelResizer side="left" />
       <FileHeader store={store} run={run} />
       <div className="flex gap-1 border-b border-line px-3 py-2">
         {(["Design", "Theme"] as const).map((t) => (
