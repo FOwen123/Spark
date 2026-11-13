@@ -1,8 +1,8 @@
-# Checks every pull request and builds the Mac app for Apple Silicon.
-# - Pull requests and manual runs (Actions > Build > Run workflow): `bun run verify`, then an
-#   unsigned Spark .dmg attached to the run as an artifact.
-# - Pushing a tag like v0.2.0 (matching the version in Cargo.toml) does the same, signs and
-#   notarizes the app when the APPLE_* secrets are set, and puts the .dmg in a draft release.
+# Checks every pull request; builds the Mac app (Apple Silicon) only when asked or released.
+# - Pull requests: `bun run verify`.
+# - Manual runs (Actions > Build > Run workflow): verify, then the .dmg attached to the run.
+# - Pushing a tag like v0.2.0 (matching the version in Cargo.toml) also puts the .dmg in a draft
+#   release. Manual runs and tags sign and notarize the app when the APPLE_* secrets are set.
 name: Build
 
 on:
@@ -42,6 +42,7 @@ jobs:
 
   app:
     needs: verify
+    if: github.event_name != 'pull_request'
     runs-on: macos-26
     permissions:
       contents: write
@@ -64,9 +65,7 @@ jobs:
 
       # Tauri tries to sign with an empty APPLE_CERTIFICATE too, so the certificate goes into a
       # keychain here and only the other settings are passed on, when the secrets exist.
-      # Pull requests stay unsigned: no wait on Apple for builds never shipped.
       - name: Use the Apple signing secrets
-        if: github.event_name != 'pull_request'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}

@@ -41,7 +41,7 @@ Open a PR against `main` with one focused change. Say what changed and how you t
 
 ## Builds and releases
 
-`.github/workflows/build.yml` runs `bun run verify` on every pull request, then builds the Mac app for Apple Silicon and attaches an unsigned `.dmg` to the run.
+`.github/workflows/build.yml` runs `bun run verify` on every pull request. It builds the Mac app for Apple Silicon only for version tags and manual runs (**Actions > Build > Run workflow**), which attach the `.dmg` to the run.
 
 To release:
 
