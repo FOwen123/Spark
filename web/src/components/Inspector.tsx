@@ -21,6 +21,7 @@ import {
 } from "./inspector/sections";
 import { GuidesSection } from "./inspector/GuidesSection";
 import { ConnectDialog } from "./ConnectDialog";
+import { PanelResizer } from "./PanelResizer";
 import { ZoomMenu } from "./ZoomMenu";
 
 const SCALES: [string, string][] = ["0.5x", "1x", "2x", "3x", "4x", "512w", "1024w", "512h"].map((s) => [s, s]);
@@ -196,7 +197,8 @@ export function Inspector(props: {
     : null;
   return (
     <StoreContext.Provider value={store}>
-    <aside aria-label="Inspector" className="flex w-[var(--right-w)] shrink-0 flex-col border-l border-line bg-panel">
+    <aside aria-label="Inspector" className="relative flex w-[var(--right-w)] shrink-0 flex-col border-l border-line bg-panel">
+      <PanelResizer side="right" />
       <div className="flex h-[var(--inspector-header-h)] shrink-0 items-center gap-1 border-b border-line px-3">
         <div className="min-w-0 flex-1 truncate text-base font-medium">{n ? (ids.length > 1 ? `${ids.length} layers` : n.name) : ""}</div>
         <ZoomMenu zoom={props.cam.zoom} run={props.run} />

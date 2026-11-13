@@ -14,6 +14,9 @@ export const DEFAULTS = {
   leftHidden: false,
   floating: false,
   pagesCollapsed: false,
+  // Side panel widths in px, dragged from their inner edges.
+  leftW: 206,
+  rightW: 280,
   // View toggles; the canvas reads these and the menu and shortcuts flip them (see Editor `toggle*` commands).
   pixelGrid: true,
   snapPixel: true,
@@ -38,7 +41,12 @@ try {
   cur = { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) ?? "{}") };
 } catch {}
 
-const apply = () => document.documentElement.toggleAttribute("data-reduce-motion", cur.reduceMotion);
+const apply = () => {
+  const root = document.documentElement;
+  root.toggleAttribute("data-reduce-motion", cur.reduceMotion);
+  root.style.setProperty("--left-w", `${cur.leftW}px`);
+  root.style.setProperty("--right-w", `${cur.rightW}px`);
+};
 apply();
 
 export const prefs = () => cur;
