@@ -10,7 +10,7 @@ use crate::{
     id::NodeId,
     node::NodeKind,
     style::{Fill, Fit, Len, Size, Style},
-    tokens::resolve,
+    tokens::resolve_in,
 };
 
 /// The font a text run uses, for measuring.
@@ -46,12 +46,14 @@ struct Gen<'a> {
     origin: (f64, f64),
     defs: String,
     next: usize,
+    /// The theme of the layer being drawn, from it or its nearest themed ancestor.
+    theme: Option<String>,
 }
 
-/// A color as an SVG paint and opacity, resolving token references.
-fn paint(doc: &Document, c: &Color) -> (String, f64) {
+/// A color as an SVG paint and opacity, resolving token references in the layer's theme.
+fn paint(doc: &Document, theme: Option<&str>, c: &Color) -> (String, f64) {
     let c = match c {
-        Color::Var(name) => resolve(&doc.tokens, name).and_then(|v| v.parse().ok()).unwrap_or(Color::BLACK),
+        Color::Var(name) => resolve_in(&doc.tokens, name, theme).and_then(|v| v.parse().ok()).unwrap_or(Color::BLACK),
         c => c.clone(),
     };
     let [r, g, b, a] = c.to_srgb().unwrap_or([0.0, 0.0, 0.0, 1.0]);
@@ -120,11 +122,12 @@ impl Gen<'_> {
 
     fn gradient(&mut self, fill: &Fill) -> String {
         let id = self.id("g");
+        let theme = self.theme.clone();
         let stops = |stops: &[crate::style::Stop], doc: &Document| {
             stops
                 .iter()
                 .map(|s| {
-                    let (c, a) = paint(doc, &s.color);
+                    let (c, a) = paint(doc, theme.as_deref(), &s.color);
                     format!(r#"<stop offset="{}" stop-color="{c}" stop-opacity="{}"/>"#, num(s.pos), num(a))
                 })
                 .collect::<String>()
@@ -161,7 +164,7 @@ impl Gen<'_> {
         for f in s.fills.iter().rev().filter(|f| !f.hidden()) {
             match f {
                 Fill::Solid { color, .. } => {
-                    let (c, a) = paint(self.doc, color);
+                    let (c, a) = paint(self.doc, self.theme.as_deref(), color);
                     let _ = write!(out, r#"{shape} fill="{c}" fill-opacity="{}"/>"#, num(a));
                 }
                 Fill::Linear { .. } | Fill::Radial { .. } | Fill::Conic { .. } => {
@@ -194,7 +197,7 @@ impl Gen<'_> {
 
     fn border(&mut self, out: &mut String, r: &Rect, s: &Style) {
         let Some(b) = &s.border else { return };
-        let (c, a) = paint(self.doc, &b.color);
+        let (c, a) = paint(self.doc, self.theme.as_deref(), &b.color);
         let dash = match b.style.as_str() {
             "dashed" => r#" stroke-dasharray="6 4""#,
             "dotted" => r#" stroke-dasharray="1 3" stroke-linecap="round""#,
@@ -241,7 +244,7 @@ impl Gen<'_> {
         for sh in s.shadows.iter().filter(|sh| !sh.hidden && !sh.inset) {
             // shortcut: inset shadows are not drawn in SVG export; add them if users need them.
             let id = self.id("f");
-            let (c, a) = paint(self.doc, &sh.color);
+            let (c, a) = paint(self.doc, self.theme.as_deref(), &sh.color);
             let _ = write!(
                 self.defs,
                 r#"<filter id="{id}" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="{}"/></filter>"#,
@@ -282,7 +285,7 @@ impl Gen<'_> {
             "right" | "end" => ("end", r.right()),
             _ => ("start", r.x),
         };
-        let (c, a) = paint(self.doc, &color);
+        let (c, a) = paint(self.doc, self.theme.as_deref(), &color);
         // Baseline: half-leading above, then the ascent (about 0.8 em for typical UI fonts).
         let first = r.y + (line_h - size) / 2.0 + size * 0.8;
         let _ = write!(
@@ -317,6 +320,13 @@ impl Gen<'_> {
     }
 
     fn node(&mut self, out: &mut String, id: NodeId) {
+        let theme = self.doc.node(id).and_then(|n| n.theme.clone());
+        let outer = if theme.is_some() { std::mem::replace(&mut self.theme, theme) } else { self.theme.clone() };
+        self.draw(out, id);
+        self.theme = outer;
+    }
+
+    fn draw(&mut self, out: &mut String, id: NodeId) {
         let Some(n) = self.doc.node(id).filter(|n| !n.hidden) else { return };
         let Some(r) = self.rect(id) else { return };
         let s = &n.style;
@@ -491,7 +501,9 @@ pub fn node_svg(doc: &Document, id: NodeId, opts: &SvgOpts) -> Result<String, St
         .measured
         .get(&id)
         .ok_or_else(|| format!("{id} has no measured size yet; open the file in Spark once so its layout is known"))?;
-    let mut g = Gen { doc, opts, origin: (r.x, r.y), defs: String::new(), next: 0 };
+    // A layer inside a themed frame is drawn in that frame's theme.
+    let theme = doc.ancestors(id).into_iter().find_map(|a| doc.node(a)?.theme.clone());
+    let mut g = Gen { doc, opts, origin: (r.x, r.y), defs: String::new(), next: 0, theme };
     let mut body = String::new();
     g.node(&mut body, id);
     Ok(format!(
@@ -541,5 +553,36 @@ mod tests {
         assert!(svg.matches("<tspan").count() >= 2, "text wraps to the measured width: {svg}");
         assert!(node_svg(&doc, NodeId::new(999, 0), &SvgOpts { measure: &measure, asset: &|_| None }).is_err());
         let _ = Op::Delete { id: root };
+    }
+
+    #[test]
+    fn themed_frames_draw_with_their_theme_values() {
+        let mut doc = Document::new("Themes");
+        let page = doc.pages[0].id;
+        for t in crate::tokens::starter() {
+            doc.apply(Op::SetToken { name: t.name.clone(), token: Some(t) }).unwrap();
+        }
+        let imp = import(
+            &mut doc,
+            r#"<div data-theme="dark" style="width:100px;height:100px"><div style="width:50px;height:50px;background:var(--color-background)"></div></div>"#,
+            Parent::Page(page),
+            None,
+            &mut |_| ImageSrc::Failed(String::new()),
+        );
+        for op in imp.ops {
+            doc.apply(op).unwrap();
+        }
+        let root = imp.roots[0];
+        assert_eq!(doc.node(root).unwrap().theme.as_deref(), Some("dark"));
+        let inner = doc.children(Parent::Node(root)).next().unwrap();
+        doc.set_measured(root, Rect { x: 0.0, y: 0.0, w: 100.0, h: 100.0 });
+        doc.set_measured(inner, Rect { x: 0.0, y: 0.0, w: 50.0, h: 50.0 });
+        let measure = |_: &str, _: &TextStyle| 0.0;
+        let o = SvgOpts { measure: &measure, asset: &|_| None };
+        // The dark background is oklch(0.145 0 0), #0a0a0a; the base one is white.
+        assert!(node_svg(&doc, root, &o).unwrap().contains(r##"fill="#0a0a0a""##));
+        assert!(node_svg(&doc, inner, &o).unwrap().contains(r##"fill="#0a0a0a""##), "theme comes from the ancestor");
+        doc.apply(Op::Set { id: root, prop: "theme".into(), value: serde_json::Value::Null }).unwrap();
+        assert!(node_svg(&doc, inner, &o).unwrap().contains(r##"fill="#ffffff""##));
     }
 }

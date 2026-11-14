@@ -67,6 +67,8 @@ export type NodeView = {
   text?: string;
   tag?: string;
   attrs?: Record<string, string>;
+  /** Token theme for this layer and its contents. */
+  theme?: string;
   style: Style;
   exports?: ExportPreset[];
   layoutGuides?: LayoutGuide[];
@@ -77,7 +79,7 @@ export type NodeView = {
 };
 
 export type Page = { id: string; name: string; icon?: string; canvas?: string; divider?: boolean };
-export type Token = { name: string; value: string; description?: string };
+export type Token = { name: string; value: string; description?: string; themes?: Record<string, string> };
 export type FileInfo = { id: string; name: string; path: string };
 export type Rect = { x: number; y: number; w: number; h: number };
 export type Snapshot = {
