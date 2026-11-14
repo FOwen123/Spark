@@ -62,3 +62,33 @@ mod tests {
         assert_eq!(v["name"], "Demo");
     }
 }
+
+/// The style guide followed by the tokens as Tailwind `@theme` CSS: one markdown file to keep
+/// in a code repository (as DESIGN.md) so coding agents follow the same rules as the design.
+pub fn design_md(doc: &Document) -> String {
+    let guide = doc.guide.trim();
+    let mut out = if guide.is_empty() { format!("# {}\n", doc.name) } else { format!("{guide}\n") };
+    if !doc.tokens.is_empty() {
+        out.push_str(&format!("\n## Tokens\n\n```css\n{}```\n", crate::tokens::to_css(&doc.tokens, true)));
+    }
+    out
+}
+
+#[cfg(test)]
+mod design_md_tests {
+    use super::design_md;
+    use crate::{Document, doc::Op, tokens::Token};
+
+    #[test]
+    fn design_md_joins_guide_and_tokens() {
+        let mut doc = Document::new("Shop");
+        assert_eq!(design_md(&doc), "# Shop\n");
+        doc.apply(Op::SetGuide { text: "# Shop rules\n- Flat\n".into() }).unwrap();
+        let tok = Token { name: "--color-ink".into(), value: "#111".into(), description: None };
+        doc.apply(Op::SetToken { name: tok.name.clone(), token: Some(tok) }).unwrap();
+        assert_eq!(
+            design_md(&doc),
+            "# Shop rules\n- Flat\n\n## Tokens\n\n```css\n@theme {\n  --color-ink: #111;\n}\n```\n"
+        );
+    }
+}

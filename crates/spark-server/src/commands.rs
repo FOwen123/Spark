@@ -644,6 +644,11 @@ fn run_cmd(open: &mut OpenDoc, client: ClientId, cmd: &Value) -> CmdResult {
             let name = cmd["name"].as_str().unwrap_or_default().to_string();
             Ok((json!(null), tx(open, vec![Op::SetToken { name, token: None }])?))
         }
+        "setGuide" => {
+            let text = cmd["text"].as_str().ok_or("text required")?.to_string();
+            Ok((json!(null), tx(open, vec![Op::SetGuide { text }])?))
+        }
+        "designMd" => Ok((json!(spark_core::export::design_md(&open.editor.doc)), vec![])),
         "tokensCss" => {
             let theme = cmd["theme"].as_bool().unwrap_or(true);
             Ok((json!(spark_core::tokens::to_css(&open.editor.doc.tokens, theme)), vec![]))

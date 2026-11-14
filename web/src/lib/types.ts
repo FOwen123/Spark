@@ -86,6 +86,8 @@ export type Snapshot = {
   nodes: Record<string, NodeView>;
   rects?: Record<string, [number, number, number, number]>;
   tokens: Token[];
+  /** The file's style guide (markdown). */
+  guide: string;
   page: string | null;
   selection: string[];
   canUndo: boolean;

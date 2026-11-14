@@ -198,6 +198,18 @@ async fn builds_a_design_through_tools() {
         s.tool_json("find_nodes", json!({"fileId": id, "filters": [{"styleValue": "var(--color-alias)"}]})).await;
     assert_eq!(found["count"], 0);
 
+    // Style guide.
+    s.tool_json("set_style_guide", json!({"fileId": id, "text": "# Rules\n- 8px grid"})).await;
+    let g = s.tool_json("set_style_guide", json!({"fileId": id, "decision": "No shadows"})).await;
+    assert_eq!(g["styleGuide"], "# Rules\n- 8px grid\n\n## Decisions\n\n- No shadows\n");
+    let info = s.tool_json("get_basic_info", json!({"fileId": id})).await;
+    assert_eq!(info["styleGuide"], g["styleGuide"]);
+    let (_, c) = s.tool("get_design_md", json!({"fileId": id})).await;
+    let md = c[1]["text"].as_str().unwrap();
+    assert!(md.starts_with("# Rules") && md.contains("- No shadows") && md.contains("--color-ink: #111111;"));
+    let (err, _) = s.tool("set_style_guide", json!({"fileId": id})).await;
+    assert!(err, "needs text or decision");
+
     // Pages.
     let p = s.tool_json("create_page", json!({"fileId": id, "name": "Mobile"})).await;
     let pid = p["pageId"].as_str().unwrap().to_string();

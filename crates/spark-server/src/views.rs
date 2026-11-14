@@ -61,6 +61,7 @@ pub fn snapshot(open: &mut OpenDoc) -> Value {
         "nodes": nodes,
         "rects": rects,
         "tokens": doc.tokens.values().collect::<Vec<_>>(),
+        "guide": doc.guide,
         "page": open.editor.page,
         "selection": open.editor.selection,
         "canUndo": can_undo,
@@ -72,7 +73,7 @@ pub fn snapshot(open: &mut OpenDoc) -> Value {
 pub fn patch(open: &OpenDoc, ops: &[Op]) -> Value {
     let doc = &open.editor.doc;
     let mut touched = BTreeSet::new();
-    let (mut pages, mut tokens, mut name) = (false, false, false);
+    let (mut pages, mut tokens, mut name, mut guide) = (false, false, false, false);
     for op in ops {
         match op {
             Op::Insert { node, .. } => {
@@ -91,6 +92,7 @@ pub fn patch(open: &OpenDoc, ops: &[Op]) -> Value {
             Op::InsertPage { .. } | Op::DeletePage { .. } | Op::SetPage { .. } | Op::MovePage { .. } => pages = true,
             Op::SetToken { .. } => tokens = true,
             Op::SetFileName { .. } => name = true,
+            Op::SetGuide { .. } => guide = true,
             Op::AddAsset { .. } => {}
         }
     }
@@ -113,6 +115,9 @@ pub fn patch(open: &OpenDoc, ops: &[Op]) -> Value {
     }
     if name {
         msg["name"] = json!(doc.name);
+    }
+    if guide {
+        msg["guide"] = json!(doc.guide);
     }
     msg
 }

@@ -11,6 +11,7 @@ export class DocStore {
   file: FileInfo;
   pages: Page[] = [];
   tokens: Token[] = [];
+  guide = "";
   page = "";
   selection: string[] = [];
   canUndo = false;
@@ -45,6 +46,7 @@ export class DocStore {
     this.file = s.file;
     this.pages = s.pages;
     this.tokens = s.tokens;
+    this.guide = s.guide;
     this.page = s.page ?? s.pages.find((p) => !p.divider)?.id ?? "";
     this.selection = s.selection;
     this.canUndo = s.canUndo;
@@ -126,6 +128,7 @@ export class DocStore {
     if (moved.length) this.emitRects();
     if (p.pages) this.pages = p.pages;
     if (p.tokens) this.tokens = p.tokens;
+    if (p.guide !== undefined) this.guide = p.guide;
     if (p.name !== undefined) this.file = { ...this.file, name: p.name };
     if (p.page) this.page = p.page;
     if (p.selection) this.selection = p.selection;

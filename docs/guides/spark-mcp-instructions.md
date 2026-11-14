@@ -11,7 +11,7 @@ Spark is a design canvas built from real HTML and CSS. Every layer is a DOM elem
 
 ## Start of a session
 
-1. Call `get_basic_info` to see pages, artboards, fonts in use and tokens.
+1. Call `get_basic_info` to see pages, artboards, fonts in use, tokens and the file's style guide (`styleGuide`). Follow the style guide: it holds the user's rules and past decisions for this file.
 2. Call `get_selection` to see what the user is pointing at. "This", "here" and "it" usually mean the selection.
 3. Pass `pageId` explicitly when you work on a page other than the one the user is viewing.
 
@@ -41,6 +41,10 @@ Call `get_font_family_info` before you pick fonts. Geist and Geist Mono always w
 ## Tokens
 
 Design tokens are CSS custom properties in Tailwind v4 theme namespaces (`--color-*`, `--spacing-*`, `--radius-*`, `--font-*`, `--text-*` and so on). Use them in styles as `var(--color-brand)`. Create them with `create_tokens`, change or remove them with `set_tokens`, and read them with `get_tokens`.
+
+## Style guide
+
+The style guide is markdown the user and agents keep in the file. When the user settles a design choice ("no shadows", "use the compact table"), record it with `set_style_guide` and `decision`, so later sessions follow it. Replace the whole text with `text` only when the user asks you to write or rewrite the guide. To carry the design into a code repository, call `get_design_md` and save the result as `DESIGN.md`.
 
 ## Finishing
 

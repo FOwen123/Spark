@@ -21,7 +21,7 @@ Spark is three Rust crates, a React UI and a Tauri shell. The document lives in 
 
 ## spark-core
 
-- **Document** (`doc.rs`): a flat map of nodes plus a `(parent, sort key)` entry per node, pages, tokens and content-addressed assets. Node ids are `<base36 counter>-<site>`; sort keys are fractional indexes (`fractional.rs`), so reordering rewrites one string.
+- **Document** (`doc.rs`): a flat map of nodes plus a `(parent, sort key)` entry per node, pages, tokens, the style guide and content-addressed assets. Node ids are `<base36 counter>-<site>`; sort keys are fractional indexes (`fractional.rs`), so reordering rewrites one string.
 - **Ops**: `Insert`, `Delete` (a tombstone), `Move`, `Set { node, prop, value }`, page, token and asset ops. `Document::apply` validates an op, applies it and returns its inverse. Nothing else mutates the document.
 - **Editor** (`history.rs`): applies op batches atomically and keeps undo history (grouping for drags, a 250 ms merge window for same-key edits, 250 entries).
 - **Styles** (`style.rs`, `css.rs`): a typed subset of CSS for layout plus a design layer (fills, border, radius, shadows, effects, typography), with a raw map for CSS Spark doesn't model. `css::compile` turns a node into CSS; `apply_decl` parses CSS into the typed model. Colors are stored as OKLCH.
