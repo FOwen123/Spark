@@ -88,7 +88,18 @@ jobs:
             printf '%s=%s\n' "$name" "${!name}" >> "$GITHUB_ENV"
           done
 
+      # Releases also build the signed update bundle the in-app updater installs; other builds
+      # skip it, so they need no update key.
+      - name: Turn on the update bundle (releases)
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          jq '.bundle.createUpdaterArtifacts = true' apps/desktop/src-tauri/tauri.conf.json > conf.json
+          mv conf.json apps/desktop/src-tauri/tauri.conf.json
+
       - run: bun run --cwd apps/desktop build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ startsWith(github.ref, 'refs/tags/') && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ startsWith(github.ref, 'refs/tags/') && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
 
       - uses: actions/upload-artifact@v7
         with:
@@ -99,4 +110,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --draft --title "Spark $GITHUB_REF_NAME" --generate-notes target/release/bundle/dmg/*.dmg
+        run: |
+          # latest.json is what installed copies read, through the newest published release.
+          cd target/release/bundle
+          jq -n --arg version "${GITHUB_REF_NAME#v}" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg signature "$(cat macos/Spark.app.tar.gz.sig)" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/Spark.app.tar.gz" \
+            '{version: $version, pub_date: $date, platforms: {"darwin-aarch64": {signature: $signature, url: $url}}}' > latest.json
+          gh release create "$GITHUB_REF_NAME" --draft --title "Spark $GITHUB_REF_NAME" --generate-notes \
+            dmg/*.dmg macos/Spark.app.tar.gz latest.json

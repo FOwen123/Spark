@@ -10,7 +10,8 @@ use tauri::{
     utils::config::BackgroundThrottlingPolicy,
 };
 use tauri_plugin_deep_link::DeepLinkExt;
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogBuilder, MessageDialogButtons};
+use tauri_plugin_updater::UpdaterExt;
 
 /// Opens files and `spark://` links passed on the command line or by the OS.
 fn open_args(hub: &Hub, args: impl IntoIterator<Item = String>) {
@@ -22,6 +23,56 @@ fn open_args(hub: &Hub, args: impl IntoIterator<Item = String>) {
             eprintln!("spark: can't open {a}: {e}");
         }
     }
+}
+
+/// An update dialog shown as a sheet on the main window, so it waits with Spark instead of
+/// floating as a separate system alert.
+fn update_dialog(app: &AppHandle, text: String) -> Option<MessageDialogBuilder<tauri::Wry>> {
+    let window = app.get_webview_window("main")?;
+    Some(app.dialog().message(text).title("Software Update").parent(&window))
+}
+
+/// Looks for a newer published release and offers to install it. The launch check (`quiet`) only
+/// speaks up when there is one; the menu item also says when Spark is current or the check failed.
+async fn check_for_update(app: AppHandle, quiet: bool) {
+    let say = |text: String| {
+        if let Some(d) = update_dialog(&app, text) {
+            d.show(|_| {});
+        }
+    };
+    let update = match app.updater() {
+        Ok(updater) => updater.check().await,
+        Err(e) => Err(e),
+    };
+    let update = match update {
+        Ok(Some(update)) => update,
+        Ok(None) if !quiet => return say(format!("Spark {} is the latest version.", app.package_info().version)),
+        Err(e) if !quiet => return say(format!("Couldn't check for updates: {e}")),
+        _ => return,
+    };
+    let text = format!(
+        "Spark {} is available (you have {}). Your files are already saved.",
+        update.version, update.current_version
+    );
+    let Some(ask) = update_dialog(&app, text) else { return };
+    let handle = app.clone();
+    ask.buttons(MessageDialogButtons::OkCancelCustom("Install and Restart".into(), "Later".into())).show(
+        move |install| {
+            if !install {
+                return;
+            }
+            tauri::async_runtime::spawn(async move {
+                match update.download_and_install(|_, _| {}, || {}).await {
+                    Ok(()) => handle.restart(),
+                    Err(e) => {
+                        if let Some(d) = update_dialog(&handle, format!("Couldn't install the update: {e}")) {
+                            d.show(|_| {});
+                        }
+                    }
+                }
+            });
+        },
+    );
 }
 
 fn focus(app: &AppHandle) {
@@ -113,6 +164,7 @@ fn menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
                 None,
                 Some(AboutMetadata { name: Some("Spark".into()), ..Default::default() }),
             )?,
+            &item("checkUpdates", "Check for Updates…", None)?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::hide(app, None)?,
             &PredefinedMenuItem::hide_others(app, None)?,
@@ -157,6 +209,7 @@ fn main() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             let bundled = app.path().resource_dir().ok().map(|d| d.join("web")).filter(|d| d.exists());
             // `tauri dev` has no bundled resources; serve the repo's web build instead.
@@ -200,7 +253,7 @@ fn main() {
                 }
             }));
             let h = hub.clone();
-            app.on_menu_event(move |_, event| match event.id().as_ref() {
+            app.on_menu_event(move |app, event| match event.id().as_ref() {
                 "newFile" => match h.create("Untitled") {
                     Ok(d) => {
                         let id = d.lock().unwrap().id().to_string();
@@ -209,6 +262,7 @@ fn main() {
                     Err(e) => eprintln!("spark: {e}"),
                 },
                 "openFile" => open_dialog(),
+                "checkUpdates" => drop(tauri::async_runtime::spawn(check_for_update(app.clone(), false))),
                 other => h.menu(other),
             });
 
@@ -274,6 +328,10 @@ fn main() {
                 tokio::time::sleep(std::time::Duration::from_millis(800)).await;
                 open_args(&h, start);
             });
+            // Tests and managed installs set SPARK_DISABLE_UPDATER to skip the launch check.
+            if std::env::var_os("SPARK_DISABLE_UPDATER").is_none() {
+                tauri::async_runtime::spawn(check_for_update(app.handle().clone(), true));
+            }
             let _ = app.emit("spark-ready", ());
             Ok(())
         })

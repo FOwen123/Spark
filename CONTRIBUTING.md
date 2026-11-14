@@ -47,9 +47,11 @@ To release:
 
 1. Set the new `version` in the root `Cargo.toml` and merge it.
 2. Push a matching tag: `git tag v0.2.0 && git push origin v0.2.0`.
-3. The workflow signs and notarizes the app, then puts the `.dmg` in a draft release. Review it and publish.
+3. The workflow signs and notarizes the app, then puts the `.dmg`, the update bundle (`Spark.app.tar.gz`) and `latest.json` in a draft release. Review it and publish. Installed copies offer the update once it is published; drafts are never offered.
 
 Signing needs a Developer ID Application certificate and an app-specific password for notarization, stored as repository secrets: `APPLE_CERTIFICATE` (the `.p12`, base64), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` and `APPLE_TEAM_ID`. Without them, a tag still builds, but the app is unsigned.
+
+Tags also sign the update bundle with Spark's update key, stored as `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`; its public half is `plugins.updater.pubkey` in `apps/desktop/src-tauri/tauri.conf.json`. A tag build fails without them. Other builds skip the bundle and need no key. A fork that ships its own releases makes its own key with `bunx tauri signer generate` and points `plugins.updater` at its repository. Keep the private key backed up: installed copies accept only updates signed by it.
 
 ## Where things are
 

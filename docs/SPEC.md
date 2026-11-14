@@ -163,7 +163,7 @@ PNG, JPG, WebP (1×–4× or a target width or height), SVG, PDF (one node, or m
 
 ## Desktop shell
 
-Tauri v2 with `tauri-plugin-deep-link` (`spark://file/<id>/<pageId>?node=<id>`), `tauri-plugin-single-instance` (forwards links and opened files to the running instance), native menus with standard shortcuts, `.spark` file association, multiple tabs, background throttling disabled for documents agents are working on, and window state restore. Signed builds and auto-update are not part of v1.
+Tauri v2 with `tauri-plugin-deep-link` (`spark://file/<id>/<pageId>?node=<id>`), `tauri-plugin-single-instance` (forwards links and opened files to the running instance), native menus with standard shortcuts, `.spark` file association, multiple tabs, background throttling disabled for documents agents are working on, window state restore, and updates: at launch and from **Spark > Check for Updates…** the app reads `latest.json` from the newest published GitHub release and offers to install a newer version, verified against the update key in `tauri.conf.json`, then restarts. Release builds are signed and notarized.
 
 ## Testing
 
@@ -179,4 +179,4 @@ Tauri v2 with `tauri-plugin-deep-link` (`spark://file/<id>/<pageId>?node=<id>`),
 
 ## Out of scope for v1
 
-Accounts, cloud sync, multiplayer, comments, components and instances, pen tool, shader fills, video export, Figma import, plugins, and auto-update. The model (site-tagged ids, an op log, tombstones) is designed so multiplayer and components can be added later without a format break.
+Accounts, cloud sync, multiplayer, comments, components and instances, pen tool, shader fills, video export, Figma import, and plugins. The model (site-tagged ids, an op log, tombstones) is designed so multiplayer and components can be added later without a format break.
