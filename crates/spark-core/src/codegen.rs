@@ -137,8 +137,8 @@ impl Gen<'_> {
             decls.retain(|(k, _)| !matches!(k.as_str(), "position" | "left" | "top" | "right" | "bottom"));
         }
         let mut id_attr = if self.opts.include_ids { format!(" id=\"{id}\"") } else { String::new() };
-        // Theme names are validated slugs, so they need no escaping.
-        if let Some(t) = &n.theme {
+        // Valid theme names need no escaping; files can hold anything, so others are left out.
+        if let Some(t) = n.theme.as_ref().filter(|t| crate::tokens::validate_theme(t).is_ok()) {
             id_attr.push_str(&format!(" data-theme=\"{t}\""));
         }
         let jsx = self.opts.format != Format::Html;
@@ -468,9 +468,12 @@ mod tests {
 
     #[test]
     fn themes_round_trip_as_data_theme() {
-        let (doc, roots) = doc_with(r#"<div data-theme="dark"><div data-theme="Bad">x</div></div>"#);
+        let (mut doc, roots) = doc_with(r#"<div data-theme="dark"><div data-theme="Bad">x</div></div>"#);
         let html = code(&doc, &roots, &opts(Format::Html));
         assert!(html.starts_with(r#"<div data-theme="dark""#) && html.matches("data-theme").count() == 1, "{html}");
+        // A file can hold any name; export leaves out ones that aren't valid.
+        doc.nodes.get_mut(&roots[0]).unwrap().theme = Some("\"><script>".into());
+        assert!(!code(&doc, &roots, &opts(Format::Html)).contains("data-theme"));
     }
 
     #[test]

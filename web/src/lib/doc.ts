@@ -250,16 +250,19 @@ const EMPTY: string[] = [];
 
 /**
  * CSS giving layers with a theme (`data-theme`) inside `[data-tokens="<file id>"]` that theme's
- * token values. Aliases are declared again so they resolve against the theme's values. Values that
- * could end a declaration or rule are skipped, since files can come from anyone.
+ * token values. Every token is declared at each themed layer (its theme value or its base value),
+ * so a theme inside another theme doesn't inherit the outer one's values and aliases resolve
+ * against the inner theme. Names and values that could end a selector, declaration or rule are
+ * skipped, since files can come from anyone.
  */
 export function themeCss(file: string, tokens: Token[]): string {
+  if (!/^[\w-]+$/.test(file)) return "";
   const themes = new Set(tokens.flatMap((t) => Object.keys(t.themes ?? {})).filter((t) => /^[a-z0-9-]+$/.test(t)));
   return [...themes]
     .map((theme) => {
       const decls = tokens.flatMap((t) => {
-        const v = t.themes?.[theme] ?? (/^var\(--[\w-]+\)$/.test(t.value) ? t.value : null);
-        return v !== null && /^--[\w-]+$/.test(t.name) && !/[{};<>\\]/.test(v) ? [`${t.name}:${v}`] : [];
+        const v = t.themes?.[theme] ?? t.value;
+        return /^--[\w-]+$/.test(t.name) && !/[{};<>\\]/.test(v) ? [`${t.name}:${v}`] : [];
       });
       return `[data-tokens="${file}"] [data-theme="${theme}"]{${decls.join(";")}}`;
     })

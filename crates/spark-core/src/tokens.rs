@@ -105,9 +105,10 @@ pub fn starter() -> Vec<Token> {
     out
 }
 
-/// Every theme some token has a value for.
+/// Every valid theme some token has a value for. Files can hold any name, so invalid ones are left
+/// out of everything built from this list.
 pub fn theme_names(tokens: &BTreeMap<String, Token>) -> std::collections::BTreeSet<String> {
-    tokens.values().flat_map(|t| t.themes.keys().cloned()).collect()
+    tokens.values().flat_map(|t| t.themes.keys()).filter(|n| validate_theme(n).is_ok()).cloned().collect()
 }
 
 /// Resolves aliases to a final value. None for unknown names or alias cycles.
@@ -130,9 +131,9 @@ pub fn resolve_in(tokens: &BTreeMap<String, Token>, name: &str, theme: Option<&s
 }
 
 /// `@theme { ... }` (Tailwind v4) or `:root { ... }` CSS, then one `[data-theme="<name>"]` block
-/// per theme overriding the tokens that theme changes. Aliases are declared again in each block:
-/// a custom property's `var()` resolves where it is declared, so without that an alias would keep
-/// the base value inside a themed element.
+/// per theme. Each block declares every token (the theme's value or the base one), so a theme
+/// nested in another doesn't inherit the outer one's values, and aliases resolve against the
+/// block's values (a custom property's `var()` resolves where it is declared).
 pub fn to_css(tokens: &BTreeMap<String, Token>, theme: bool) -> String {
     let mut out = String::from(if theme { "@theme {\n" } else { ":root {\n" });
     for t in tokens.values() {
@@ -145,9 +146,7 @@ pub fn to_css(tokens: &BTreeMap<String, Token>, theme: bool) -> String {
     for name in theme_names(tokens) {
         out.push_str(&format!("\n[data-theme=\"{name}\"] {{\n"));
         for t in tokens.values() {
-            if let Some(v) = t.themes.get(&name).or(var_name(&t.value).map(|_| &t.value)) {
-                out.push_str(&format!("  {}: {v};\n", t.name));
-            }
+            out.push_str(&format!("  {}: {};\n", t.name, t.themes.get(&name).unwrap_or(&t.value)));
         }
         out.push_str("}\n");
     }
@@ -244,8 +243,10 @@ mod tests {
         );
         assert!(
             to_css(&t, true)
-                .ends_with("}\n\n[data-theme=\"dark\"] {\n  --color-bg: #000;\n  --color-card: var(--color-bg);\n}\n")
+                .ends_with("}\n\n[data-theme=\"dark\"] {\n  --color-bg: #000;\n  --color-card: var(--color-bg);\n  --color-ink: #111;\n}\n")
         );
+        t.get_mut("--color-ink").unwrap().themes.insert("x\"]{}".into(), "#000".into());
+        assert_eq!(theme_names(&t).into_iter().collect::<Vec<_>>(), ["dark"], "names loaded from a file are checked");
         assert!(validate_theme("brand-b2").is_ok());
         for bad in ["", "Dark", "default", "a--b", "-a", "a b", "a\"]"] {
             assert!(validate_theme(bad).is_err(), "{bad}");
