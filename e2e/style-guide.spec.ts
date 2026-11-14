@@ -30,3 +30,30 @@ test("the style guide is shared with agents, kept in the file and exported as DE
     await agent.close();
   }
 });
+
+test("unsaved guide text survives agent edits and switching files", async ({ page }) => {
+  await newFile(page);
+  const agent = await connectAgent("e2e-style-guide-draft");
+  try {
+    await page.getByRole("button", { name: "Guide", exact: true }).click();
+    const field = page.getByRole("textbox", { name: "Style guide" });
+    await field.fill("- Mine");
+    // An agent writes while the user is still typing; the user's text stays in the field.
+    await call(agent, "set_style_guide", { text: "- Agent" });
+    await expect(field).toHaveValue("- Mine");
+    await expect(field).toBeFocused();
+    await field.blur();
+    const { fileId } = await callJson<{ fileId: string }>(agent, "get_basic_info", {});
+    const guide = async () => (await callJson<{ styleGuide: string }>(agent, "get_basic_info", { fileId })).styleGuide;
+    await expect.poll(guide).toBe("- Mine");
+
+    // Leaving the file from the keyboard (Mod+T opens a new file) keeps what was typed.
+    await field.fill("- Mine\n- Kept");
+    const tabs = await page.getByRole("tab").count();
+    await page.keyboard.press("ControlOrMeta+T");
+    await expect(page.getByRole("tab")).toHaveCount(tabs + 1);
+    await expect.poll(guide).toBe("- Mine\n- Kept");
+  } finally {
+    await agent.close();
+  }
+});

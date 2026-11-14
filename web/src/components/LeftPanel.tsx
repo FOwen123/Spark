@@ -567,7 +567,7 @@ export function LeftPanel({ store, menu, agents, run }: { store: DocStore; menu:
           <TokensView store={store} />
         </div>
       ) : tab === "Guide" ? (
-        <GuideView store={store} />
+        <GuideView key={store.file.id} store={store} />
       ) : (
         <>
           <Pages store={store} agents={agents} />
