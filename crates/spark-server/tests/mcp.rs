@@ -198,6 +198,32 @@ async fn builds_a_design_through_tools() {
         s.tool_json("find_nodes", json!({"fileId": id, "filters": [{"styleValue": "var(--color-alias)"}]})).await;
     assert_eq!(found["count"], 0);
 
+    // Themes.
+    s.tool_json(
+        "set_tokens",
+        json!({"fileId": id, "tokens": [{"name": "--color-ink", "themes": {"dark": "#eeeeee"}}]}),
+    )
+    .await;
+    let toks = s.tool_json("get_tokens", json!({"fileId": id, "namePattern": "--color-ink"})).await;
+    assert_eq!(toks["tokens"][0]["themes"]["dark"], "#eeeeee");
+    let (_, c) = s.tool("get_tokens", json!({"fileId": id, "format": "css"})).await;
+    assert!(
+        c[1]["text"]
+            .as_str()
+            .unwrap()
+            .contains("[data-theme=\"dark\"] {\n  --color-alias: var(--color-ink);\n  --color-ink: #eeeeee;\n}")
+    );
+    s.tool_json("update_styles", json!({"fileId": id, "updates": [{"nodeIds": [board_id], "theme": "dark"}]})).await;
+    let (_, c) = s.tool("get_jsx", json!({"fileId": id, "nodeId": board_id, "format": "html"})).await;
+    assert!(c.iter().any(|x| x["text"].as_str().is_some_and(|t| t.contains("data-theme=\"dark\""))));
+    let (err, _) = s
+        .tool("update_styles", json!({"fileId": id, "updates": [{"nodeIds": [board_id], "theme": "Not a theme"}]}))
+        .await;
+    assert!(err, "theme names are checked");
+    s.tool_json("update_styles", json!({"fileId": id, "updates": [{"nodeIds": [board_id], "theme": null}]})).await;
+    let info = s.tool_json("get_basic_info", json!({"fileId": id})).await;
+    assert_eq!(info["tokens"]["themes"], json!(["dark"]));
+
     // Pages.
     let p = s.tool_json("create_page", json!({"fileId": id, "name": "Mobile"})).await;
     let pid = p["pageId"].as_str().unwrap().to_string();

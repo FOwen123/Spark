@@ -626,18 +626,62 @@ fn run_cmd(open: &mut OpenDoc, client: ClientId, cmd: &Value) -> CmdResult {
                 value: Option<String>,
                 #[serde(default)]
                 description: Option<String>,
+                /// Set `value` for this theme instead of the base value; an empty value removes it.
+                #[serde(default)]
+                theme: Option<String>,
             }
             let c: C = parse(cmd)?;
             let doc = &open.editor.doc;
             let old = doc.tokens.get(&c.name).cloned();
-            let value = c.value.or(old.as_ref().map(|t| t.value.clone())).ok_or("token value required")?;
+            let mut themes = old.as_ref().map(|t| t.themes.clone()).unwrap_or_default();
+            let base = match &c.theme {
+                Some(theme) => {
+                    match c.value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+                        Some(v) => themes.insert(theme.clone(), v.to_string()),
+                        None => themes.remove(theme),
+                    };
+                    None
+                }
+                None => c.value,
+            };
+            let value = base.or(old.as_ref().map(|t| t.value.clone())).ok_or("token value required")?;
             let description = c.description.or(old.and_then(|t| t.description)).filter(|d| !d.is_empty());
             let name = c.new_name.unwrap_or(c.name.clone());
             let mut ops = Vec::new();
             if name != c.name {
                 ops.push(Op::SetToken { name: c.name.clone(), token: None });
             }
-            ops.push(Op::SetToken { name: name.clone(), token: Some(Token { name, value, description }) });
+            ops.push(Op::SetToken { name: name.clone(), token: Some(Token { name, value, description, themes }) });
+            Ok((json!(null), tx(open, ops)?))
+        }
+        "renameTheme" | "deleteTheme" => {
+            let from = cmd["name"].as_str().ok_or("name required")?;
+            let to = cmd["newName"].as_str().filter(|_| kind == "renameTheme");
+            if let Some(to) = to {
+                spark_core::tokens::validate_theme(to)?;
+            }
+            let mut ops = Vec::new();
+            for t in open.editor.doc.tokens.values() {
+                let Some(v) = t.themes.get(from) else { continue };
+                let mut t = t.clone();
+                t.themes.remove(from);
+                if let Some(to) = to {
+                    t.themes.insert(to.to_string(), v.clone());
+                }
+                ops.push(Op::SetToken { name: t.name.clone(), token: Some(t) });
+            }
+            // Layers using the theme follow it (or go back to the base values).
+            for n in open.editor.doc.all_nodes().filter(|n| n.theme.as_deref() == Some(from)) {
+                ops.push(Op::Set { id: n.id, prop: "theme".into(), value: json!(to) });
+            }
+            Ok((json!(null), tx(open, ops)?))
+        }
+        "addStarterTokens" => {
+            let ops = spark_core::tokens::starter()
+                .into_iter()
+                .filter(|t| !open.editor.doc.tokens.contains_key(&t.name))
+                .map(|t| Op::SetToken { name: t.name.clone(), token: Some(t) })
+                .collect();
             Ok((json!(null), tx(open, ops)?))
         }
         "deleteToken" => {

@@ -72,7 +72,7 @@ export const NodeEl = memo(function NodeEl({ store, id }: { store: DocStore; id:
   }
   const pending = n.image && n.image.status !== "ready";
   return (
-    <div ref={ref} data-node={id} data-kind={n.kind} style={style}>
+    <div ref={ref} data-node={id} data-kind={n.kind} data-theme={n.theme} style={style}>
       {pending && (
         <div
           data-image-state={n.image?.status}

@@ -43,6 +43,10 @@ fn tool(name: &str, kind: Kind, description: &str, properties: Value, required: 
     })
 }
 
+fn themes() -> Value {
+    json!({"type": "object", "description": "Values per theme name (lowercase words joined by -, e.g. dark).", "additionalProperties": {"type": ["string", "number", "null"]}})
+}
+
 pub fn catalog() -> Vec<Value> {
     use Kind::*;
     vec![
@@ -192,8 +196,8 @@ pub fn catalog() -> Vec<Value> {
         tool(
             "update_styles",
             Write,
-            "Change CSS on layers, in batches. Styles are camelCase CSS (null removes a property). On an artboard, left and top set its position on the canvas, so use them to arrange artboards. Reports any styles that were ignored.",
-            json!({"fileId": file(), "updates": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"nodeIds": ids("Layers to change."), "styles": {"type": "object", "additionalProperties": {"type": ["string", "number", "null"]}}}, "required": ["nodeIds", "styles"], "additionalProperties": false}}}),
+            "Change CSS on layers, in batches. Styles are camelCase CSS (null removes a property). On an artboard, left and top set its position on the canvas, so use them to arrange artboards. `theme` makes a frame and its contents use a token theme (null for the base values). Reports any styles that were ignored.",
+            json!({"fileId": file(), "updates": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"nodeIds": ids("Layers to change."), "styles": {"type": "object", "additionalProperties": {"type": ["string", "number", "null"]}}, "theme": {"type": ["string", "null"], "description": "Token theme name, e.g. dark."}}, "required": ["nodeIds"], "additionalProperties": false}}}),
             &["updates"],
         ),
         tool(
@@ -249,15 +253,15 @@ pub fn catalog() -> Vec<Value> {
         tool(
             "create_tokens",
             Write,
-            "Create design tokens. Names are CSS custom properties in Tailwind theme namespaces (--color-*, --spacing-*, …). Values may alias other tokens with var(--name).",
-            json!({"fileId": file(), "tokens": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"type": {"type": "string"}, "name": {"type": "string", "pattern": "^--[\\w-]+$"}, "value": {"type": ["string", "number"]}, "description": {"type": "string", "maxLength": 1024}}, "required": ["name", "value"], "additionalProperties": false}}}),
+            "Create design tokens. Names are CSS custom properties in Tailwind theme namespaces (--color-*, --spacing-*, …). Values may alias other tokens with var(--name). `themes` gives values for named themes such as dark; layers with that theme (update_styles `theme`, or data-theme in write_html) use them.",
+            json!({"fileId": file(), "tokens": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"type": {"type": "string"}, "name": {"type": "string", "pattern": "^--[\\w-]+$"}, "value": {"type": ["string", "number"]}, "description": {"type": "string", "maxLength": 1024}, "themes": themes()}, "required": ["name", "value"], "additionalProperties": false}}}),
             &["tokens"],
         ),
         tool(
             "set_tokens",
             Destructive,
-            "Rename, change or delete design tokens.",
-            json!({"fileId": file(), "tokens": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"name": {"type": "string"}, "newName": {"type": "string"}, "value": {"type": ["string", "number"]}, "description": {"type": "string"}, "delete": {"type": "boolean"}}, "required": ["name"], "additionalProperties": false}}}),
+            "Rename, change or delete design tokens, or set their values for named themes (null removes a theme value).",
+            json!({"fileId": file(), "tokens": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"name": {"type": "string"}, "newName": {"type": "string"}, "value": {"type": ["string", "number"]}, "description": {"type": "string"}, "themes": themes(), "delete": {"type": "boolean"}}, "required": ["name"], "additionalProperties": false}}}),
             &["tokens"],
         ),
         // Agent

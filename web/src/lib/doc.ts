@@ -248,6 +248,24 @@ export class DocStore {
 
 const EMPTY: string[] = [];
 
+/**
+ * CSS giving layers with a theme (`data-theme`) inside `[data-tokens="<file id>"]` that theme's
+ * token values. Aliases are declared again so they resolve against the theme's values. Values that
+ * could end a declaration or rule are skipped, since files can come from anyone.
+ */
+export function themeCss(file: string, tokens: Token[]): string {
+  const themes = new Set(tokens.flatMap((t) => Object.keys(t.themes ?? {})).filter((t) => /^[a-z0-9-]+$/.test(t)));
+  return [...themes]
+    .map((theme) => {
+      const decls = tokens.flatMap((t) => {
+        const v = t.themes?.[theme] ?? (/^var\(--[\w-]+\)$/.test(t.value) ? t.value : null);
+        return v !== null && /^--[\w-]+$/.test(t.name) && !/[{};<>\\]/.test(v) ? [`${t.name}:${v}`] : [];
+      });
+      return `[data-tokens="${file}"] [data-theme="${theme}"]{${decls.join(";")}}`;
+    })
+    .join("\n");
+}
+
 /** A file's design tokens as CSS custom properties, so `var(--token)` in layer styles resolves. */
 export function tokenVars(tokens: Token[]): Record<string, string> {
   return Object.fromEntries(tokens.map((t) => [t.name, t.value]));
