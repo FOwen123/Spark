@@ -42,6 +42,8 @@ Call `get_font_family_info` before you pick fonts. Geist and Geist Mono always w
 
 Design tokens are CSS custom properties in Tailwind v4 theme namespaces (`--color-*`, `--spacing-*`, `--radius-*`, `--font-*`, `--text-*` and so on). Use them in styles as `var(--color-brand)`. Create them with `create_tokens`, change or remove them with `set_tokens`, and read them with `get_tokens`.
 
+Themes give tokens other values, such as a dark mode. Set them with `themes` on `create_tokens` or `set_tokens` (`{"dark": "#0a0a0a"}`), then give a frame the theme with `update_styles` (`theme: "dark"`) or `data-theme="dark"` in `write_html`. The frame and everything inside it use the theme's values, and tokens the theme doesn't set keep their base values. For a dark version of a screen, duplicate the artboard and give the copy the theme instead of recoloring its layers.
+
 ## Finishing
 
 When you are done, call `finish_working_on_nodes` so the activity indicators on the user's canvas clear. Then tell the user what you changed, by layer name.

@@ -330,7 +330,13 @@ mod tests {
         doc.apply(Op::Insert { node: ab, parent: Parent::Page(page), key: k1 }).unwrap();
         let k2 = doc.key_at(Parent::Node(board), None, None);
         doc.apply(Op::Insert { node: t, parent: Parent::Node(board), key: k2 }).unwrap();
-        let tok = Token { name: "--color-ink".into(), value: "#111".into(), description: Some("Body text".into()) };
+        let mut tok = Token {
+            name: "--color-ink".into(),
+            value: "#111".into(),
+            description: Some("Body text".into()),
+            themes: Default::default(),
+        };
+        tok.themes.insert("dark".into(), "#eee".into());
         doc.apply(Op::SetToken { name: tok.name.clone(), token: Some(tok) }).unwrap();
         doc.apply(Op::AddAsset { hash: "abc".into(), mime: "image/png".into(), bytes: Arc::new(vec![1, 2, 3]) })
             .unwrap();

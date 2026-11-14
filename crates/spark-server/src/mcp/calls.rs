@@ -1,7 +1,7 @@
 //! Tool implementations. Every file-scoped result starts with a header naming the file and the
 //! token hash; every write runs as one undo transaction.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use base64::Engine;
 use serde_json::{Map, Value, json};
@@ -12,7 +12,7 @@ use spark_core::{
     css::{apply_decl, camel},
     node::Page,
     style::{Fill, Fit, Len, Size},
-    tokens::{Token, resolve, to_css, token_type, tokens_hash, validate_name},
+    tokens::{Token, resolve, theme_names, to_css, token_type, tokens_hash, validate_name},
 };
 
 use super::tools;
@@ -451,9 +451,16 @@ fn file_tool(app: &AppState, session: &str, d: &mut OpenDoc, name: &str, args: &
                 let mut ops = Vec::new();
                 let mut count = 0;
                 for u in &updates {
-                    let styles = u["styles"].as_object().cloned().ok_or("each update needs `styles`")?;
+                    let styles = u["styles"].as_object().cloned().unwrap_or_default();
+                    let theme = u.get("theme").map(|t| if t == "" { Value::Null } else { t.clone() });
+                    if styles.is_empty() && theme.is_none() {
+                        return Err("each update needs `styles` or `theme`".into());
+                    }
                     for id in ids_arg(u, "nodeIds")? {
                         live(&o.editor.doc, id)?;
+                        if let Some(t) = &theme {
+                            ops.push(Op::Set { id, prop: "theme".into(), value: t.clone() });
+                        }
                         let mut bad = Vec::new();
                         ops.extend(commands::style_ops(o, id, &styles, &mut bad)?);
                         ignored.extend(bad.into_iter().map(|b| json!({"nodeId": id, "reason": b})));
@@ -573,7 +580,7 @@ fn basic_info(d: &OpenDoc, args: &Value) -> R<Content> {
         "artboards": artboards,
         "pages": doc.pages.iter().map(|p| json!({"type": if p.divider { "divider" } else { "page" }, "id": p.id, "name": p.name, "icon": p.icon, "isActive": p.id == page})).collect::<Vec<_>>(),
         "fontFamilies": fonts,
-        "tokens": {"count": doc.tokens.len(), "items": doc.tokens.values().take(200).map(|t| json!({"name": t.name, "value": t.value})).collect::<Vec<_>>()},
+        "tokens": {"count": doc.tokens.len(), "themes": theme_names(&doc.tokens), "items": doc.tokens.values().take(200).map(|t| json!({"name": t.name, "value": t.value, "themes": t.themes})).collect::<Vec<_>>()},
     });
     if boards.len() > 100 {
         out["truncated"] = json!(true);
@@ -824,7 +831,7 @@ fn get_tokens(d: &OpenDoc, args: &Value) -> R<Content> {
         "tailwind" => Ok(vec![header(d), text(to_css(&selected, true))]),
         _ => ok_json(
             d,
-            json!({"tokens": selected.values().map(|t| json!({"name": t.name, "type": token_type(&t.name), "value": t.value, "resolvedValue": resolve(&doc.tokens, &t.name), "description": t.description})).collect::<Vec<_>>()}),
+            json!({"tokens": selected.values().map(|t| json!({"name": t.name, "type": token_type(&t.name), "value": t.value, "resolvedValue": resolve(&doc.tokens, &t.name), "description": t.description, "themes": t.themes})).collect::<Vec<_>>()}),
         ),
     }
 }
@@ -834,6 +841,17 @@ fn value_str(v: &Value) -> Option<String> {
         Value::String(s) => Some(s.trim().to_string()).filter(|s| !s.is_empty()),
         Value::Number(n) => Some(n.to_string()),
         _ => None,
+    }
+}
+
+/// Applies `{theme: value}` from a tool call; a null or empty value removes that theme's value.
+/// Bad theme names are left for `Document::apply` to reject.
+fn merge_themes(themes: &mut BTreeMap<String, String>, given: &Value) {
+    for (theme, v) in given.as_object().into_iter().flatten() {
+        match value_str(v) {
+            Some(v) => themes.insert(theme.clone(), v),
+            None => themes.remove(theme),
+        };
     }
 }
 
@@ -861,10 +879,13 @@ fn create_tokens(d: &mut OpenDoc, args: &Value) -> R<Content> {
             match problem {
                 Some(message) => results.push(json!({"name": name, "result": "error", "message": message})),
                 None => {
+                    let mut themes = BTreeMap::new();
+                    merge_themes(&mut themes, &t["themes"]);
                     let token = Token {
                         name: name.clone(),
                         value: value_str(&t["value"]).unwrap(),
                         description: t["description"].as_str().map(str::to_string),
+                        themes,
                     };
                     ops.push(Op::SetToken { name: name.clone(), token: Some(token) });
                     results.push(json!({"name": name, "result": "created"}));
@@ -890,6 +911,8 @@ fn set_tokens(d: &mut OpenDoc, args: &Value) -> R<Content> {
                 vec![Op::SetToken { name: name.clone(), token: None }]
             } else {
                 let new_name = t["newName"].as_str().map(str::to_string).unwrap_or(name.clone());
+                let mut themes = old.themes.clone();
+                merge_themes(&mut themes, &t["themes"]);
                 let token = Token {
                     name: new_name.clone(),
                     value: value_str(&t["value"]).unwrap_or(old.value),
@@ -898,6 +921,7 @@ fn set_tokens(d: &mut OpenDoc, args: &Value) -> R<Content> {
                         .map(|d| d.as_str().unwrap_or("").to_string())
                         .filter(|d| !d.is_empty())
                         .or(old.description),
+                    themes,
                 };
                 let mut ops = Vec::new();
                 if new_name != name {

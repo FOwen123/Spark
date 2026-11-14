@@ -591,6 +591,12 @@ impl Document {
                     if t.value.trim().is_empty() {
                         return invalid(format!("token `{name}` needs a value"));
                     }
+                    for (theme, v) in &t.themes {
+                        crate::tokens::validate_theme(theme).map_err(OpError::Invalid)?;
+                        if v.trim().is_empty() {
+                            return invalid(format!("token `{name}` needs a value for theme `{theme}`"));
+                        }
+                    }
                 }
                 let old = match token {
                     Some(t) => self.tokens.insert(name.clone(), t),
@@ -625,6 +631,13 @@ fn set_node_prop(node: &mut Node, prop: &str, value: Value) -> Result<Value, OpE
         "name" => {
             let name = value.as_str().ok_or_else(|| OpError::Invalid("name must be a string".into()))?;
             Value::String(std::mem::replace(&mut node.name, name.chars().take(200).collect()))
+        }
+        "theme" => {
+            let theme: Option<String> = serde_json::from_value(value).map_err(bad)?;
+            if let Some(t) = &theme {
+                crate::tokens::validate_theme(t).map_err(OpError::Invalid)?;
+            }
+            serde_json::to_value(std::mem::replace(&mut node.theme, theme)).unwrap()
         }
         "hidden" => Value::Bool(std::mem::replace(&mut node.hidden, serde_json::from_value(value).map_err(bad)?)),
         "locked" => Value::Bool(std::mem::replace(&mut node.locked, serde_json::from_value(value).map_err(bad)?)),
@@ -816,13 +829,21 @@ mod tests {
     #[test]
     fn token_ops_validate() {
         let mut doc = Document::new("Tokens");
-        let t = Token { name: "--color-brand".into(), value: "#000".into(), description: None };
+        let t =
+            Token { name: "--color-brand".into(), value: "#000".into(), description: None, themes: Default::default() };
         let inv = doc.apply(Op::SetToken { name: t.name.clone(), token: Some(t) }).unwrap().unwrap();
         assert_eq!(doc.tokens.len(), 1);
         doc.apply(inv).unwrap();
         assert!(doc.tokens.is_empty());
-        let bad = Token { name: "--wat".into(), value: "1".into(), description: None };
+        let bad = Token { name: "--wat".into(), value: "1".into(), description: None, themes: Default::default() };
         assert!(doc.apply(Op::SetToken { name: "--wat".into(), token: Some(bad) }).is_err());
+        let mut themed =
+            Token { name: "--color-a".into(), value: "#fff".into(), description: None, themes: Default::default() };
+        themed.themes.insert("Dark".into(), "#000".into());
+        assert!(
+            doc.apply(Op::SetToken { name: "--color-a".into(), token: Some(themed) }).is_err(),
+            "theme names are lowercase"
+        );
     }
 
     #[test]
