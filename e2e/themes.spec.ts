@@ -52,6 +52,13 @@ test("starter tokens bring light and dark themes, and users add their own", asyn
     await expect
       .poll(async () => (await callJson<{ tokens: { themes?: Record<string, string> }[] }>(agent, "get_tokens", { namePattern: "--color-background" })).tokens[0].themes)
       .toEqual({ dark: "oklch(0.145 0 0)", sepia: "#f4ecd8" });
+    // A theme inside another one falls back to the base values, not the outer theme's.
+    await call(agent, "write_html", {
+      targetNodeId: board.id,
+      mode: "insert-children",
+      html: '<div layer-name="Inner" data-theme="sepia" style="width:40px;height:40px;background:var(--color-foreground)"></div>',
+    });
+    await expect(page.locator('[data-theme="sepia"]')).toHaveCSS("background-color", "oklch(0.145 0 0)");
     await call(agent, "update_styles", { updates: [{ nodeIds: [board.id], theme: "sepia" }] });
     await expect(el).toHaveCSS("background-color", "rgb(244, 236, 216)");
 
