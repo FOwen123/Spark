@@ -100,7 +100,7 @@ pub fn catalog() -> Vec<Value> {
         tool(
             "get_basic_info",
             Read,
-            "File name, pages, the viewed page's artboards with sizes and positions, node count, fonts in use and tokens. Call this first.",
+            "File name, pages, the viewed page's artboards with sizes and positions, node count, fonts in use, tokens and the file's style guide. Call this first, and follow the style guide.",
             json!({"fileId": file(), "pageId": page()}),
             &[],
         ),
@@ -259,6 +259,21 @@ pub fn catalog() -> Vec<Value> {
             "Rename, change or delete design tokens.",
             json!({"fileId": file(), "tokens": {"type": "array", "minItems": 1, "items": {"type": "object", "properties": {"name": {"type": "string"}, "newName": {"type": "string"}, "value": {"type": ["string", "number"]}, "description": {"type": "string"}, "delete": {"type": "boolean"}}, "required": ["name"], "additionalProperties": false}}}),
             &["tokens"],
+        ),
+        // Style guide
+        tool(
+            "set_style_guide",
+            Destructive,
+            "Change the file's style guide, the markdown rules agents follow here. Give `text` to replace it, or `decision` to add one line under its Decisions heading when the user settles a design choice.",
+            json!({"fileId": file(), "text": {"type": "string", "maxLength": 100000}, "decision": {"type": "string", "maxLength": 2000}}),
+            &[],
+        ),
+        tool(
+            "get_design_md",
+            Read,
+            "The style guide plus the tokens as Tailwind @theme CSS, as one markdown file. Save it as DESIGN.md in a code repository so code follows the design.",
+            json!({"fileId": file()}),
+            &[],
         ),
         // Agent
         tool(

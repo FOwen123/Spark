@@ -408,6 +408,16 @@ fn file_tool(app: &AppState, session: &str, d: &mut OpenDoc, name: &str, args: &
         "get_tokens" => get_tokens(d, args),
         "create_tokens" => create_tokens(d, args),
         "set_tokens" => set_tokens(d, args),
+        "set_style_guide" => {
+            let text = match (args["text"].as_str(), s(args, "decision")) {
+                (Some(t), None) => t.to_string(),
+                (None, Some(decision)) => add_decision(&d.editor.doc.guide, decision),
+                _ => return Err("give either `text` or `decision`".into()),
+            };
+            write(d, |o| Ok(((), tx(o, vec![Op::SetGuide { text }])?)))?;
+            ok_json(d, json!({"styleGuide": d.editor.doc.guide}))
+        }
+        "get_design_md" => Ok(vec![header(d), text(spark_core::export::design_md(&d.editor.doc))]),
         "create_page" => {
             let name = s(args, "name").map(str::to_string);
             let icon = s(args, "icon").map(str::to_string);
@@ -574,6 +584,7 @@ fn basic_info(d: &OpenDoc, args: &Value) -> R<Content> {
         "pages": doc.pages.iter().map(|p| json!({"type": if p.divider { "divider" } else { "page" }, "id": p.id, "name": p.name, "icon": p.icon, "isActive": p.id == page})).collect::<Vec<_>>(),
         "fontFamilies": fonts,
         "tokens": {"count": doc.tokens.len(), "items": doc.tokens.values().take(200).map(|t| json!({"name": t.name, "value": t.value})).collect::<Vec<_>>()},
+        "styleGuide": doc.guide,
     });
     if boards.len() > 100 {
         out["truncated"] = json!(true);
@@ -917,6 +928,26 @@ fn set_tokens(d: &mut OpenDoc, args: &Value) -> R<Content> {
     d.broadcast(&json!({"t": "patch", "file": d.id(), "nodes": {}, "tokens": d.editor.doc.tokens.values().collect::<Vec<_>>(), "canUndo": d.editor.can_undo(), "canRedo": d.editor.can_redo()}));
     d.save(&[]);
     ok_json(d, json!(results))
+}
+
+/// The guide with `decision` added as the last bullet of its `## Decisions` section, which is
+/// created at the end when missing.
+fn add_decision(guide: &str, decision: &str) -> String {
+    let item = format!("- {}", decision.trim().replace('\n', " "));
+    let lines: Vec<&str> = guide.trim_end().lines().collect();
+    let Some(start) = lines.iter().position(|l| l.trim().eq_ignore_ascii_case("## decisions")) else {
+        let sep = if guide.trim().is_empty() { "" } else { "\n\n" };
+        return format!("{}{sep}## Decisions\n\n{item}\n", guide.trim_end());
+    };
+    // The section ends at the next heading of the same or a higher level.
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.starts_with("# ") || l.starts_with("## "))
+        .map_or(lines.len(), |i| start + 1 + i);
+    let last = (start + 1..end).rev().find(|&i| !lines[i].trim().is_empty()).unwrap_or(start);
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    out.insert(last + 1, if last == start { format!("\n{item}") } else { item });
+    out.join("\n") + "\n"
 }
 
 // ---- pages and files ------------------------------------------------------------------------------
@@ -1357,4 +1388,20 @@ fn move_nodes(o: &mut OpenDoc, moves: &[Value]) -> R<(Value, Vec<Op>)> {
         })
         .collect();
     Ok((json!({"moves": results, "affectedParents": lists}), done))
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::add_decision;
+
+    #[test]
+    fn decisions_go_under_their_heading() {
+        assert_eq!(add_decision("", "Flat"), "## Decisions\n\n- Flat\n");
+        assert_eq!(add_decision("# Rules\n- 8px grid", "Flat"), "# Rules\n- 8px grid\n\n## Decisions\n\n- Flat\n");
+        assert_eq!(
+            add_decision("## Decisions\n\n- A\n\n## Type\n- Geist", "B"),
+            "## Decisions\n\n- A\n- B\n\n## Type\n- Geist\n"
+        );
+        assert_eq!(add_decision("## Decisions\n## Type", "B"), "## Decisions\n\n- B\n## Type\n");
+    }
 }

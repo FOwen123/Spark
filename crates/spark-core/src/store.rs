@@ -153,6 +153,7 @@ impl Store {
             st.execute(params!["nextNode", doc.next_node.to_string()])?;
             st.execute(params!["nextPage", doc.next_page.to_string()])?;
             st.execute(params!["site", doc.site.to_string()])?;
+            st.execute(params!["guide", doc.guide])?;
         }
         if dirty.pages {
             tx.execute("DELETE FROM pages", [])?;
@@ -273,6 +274,7 @@ fn load(conn: &Connection) -> Result<Document, StoreError> {
         tree.insert(id, (parent, row.get::<_, String>(2)?));
     }
     let mut doc = Document::from_parts(id, name, pages, nodes, tree);
+    doc.guide = meta("guide")?.unwrap_or_default();
     if let Some(n) = doc.too_deep() {
         return Err(StoreError::Other(format!(
             "layer {n} is nested more than {} levels deep or inside itself",
@@ -334,6 +336,7 @@ mod tests {
         doc.apply(Op::SetToken { name: tok.name.clone(), token: Some(tok) }).unwrap();
         doc.apply(Op::AddAsset { hash: "abc".into(), mime: "image/png".into(), bytes: Arc::new(vec![1, 2, 3]) })
             .unwrap();
+        doc.apply(Op::SetGuide { text: "# Rules\n- 8px grid".into() }).unwrap();
         doc.set_measured(board, Rect { x: 0.0, y: 0.0, w: 400.0, h: 300.0 });
         doc
     }
@@ -352,6 +355,7 @@ mod tests {
         let board = doc.children(Parent::Page(doc.pages[0].id)).next().unwrap();
         assert_eq!(loaded.node(board), doc.node(board));
         assert_eq!(loaded.tokens, doc.tokens);
+        assert_eq!(loaded.guide, "# Rules\n- 8px grid");
         assert_eq!(loaded.assets["abc"].bytes.as_slice(), &[1, 2, 3]);
         assert_eq!(loaded.measured.get(&board).unwrap().w, 400.0);
         assert_eq!(loaded.next_node, doc.next_node);

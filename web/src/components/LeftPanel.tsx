@@ -42,6 +42,7 @@ import type { Agent, NodeView } from "../lib/types";
 import { CanvasMenu, Item, menuItem } from "./CanvasMenu";
 import { PanelResizer } from "./PanelResizer";
 import { Keycaps, Tip } from "./Tip";
+import { GuideView } from "./inspector/Guide";
 import { TokensView } from "./inspector/Tokens";
 
 export function KindIcon({ n }: { n: NodeView }) {
@@ -510,7 +511,7 @@ export function LeftPanel({ store, menu, agents, run }: { store: DocStore; menu:
     live.current = d;
     setDragState(d);
   };
-  const [tab, setTab] = useState<"Design" | "Theme">("Design");
+  const [tab, setTab] = useState<"Design" | "Theme" | "Guide">("Design");
   // null: search closed.
   const [query, setQuery] = useState<string | null>(null);
   useEffect(() => {
@@ -549,7 +550,7 @@ export function LeftPanel({ store, menu, agents, run }: { store: DocStore; menu:
       <PanelResizer side="left" />
       <FileHeader store={store} run={run} />
       <div className="flex gap-1 border-b border-line px-3 py-2">
-        {(["Design", "Theme"] as const).map((t) => (
+        {(["Design", "Theme", "Guide"] as const).map((t) => (
           <button
             key={t}
             type="button"
@@ -565,6 +566,8 @@ export function LeftPanel({ store, menu, agents, run }: { store: DocStore; menu:
         <div className="min-h-0 flex-1 overflow-auto spark-scroll">
           <TokensView store={store} />
         </div>
+      ) : tab === "Guide" ? (
+        <GuideView key={store.file.id} store={store} />
       ) : (
         <>
           <Pages store={store} agents={agents} />

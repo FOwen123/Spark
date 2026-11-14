@@ -130,6 +130,10 @@ pub enum Op {
     SetFileName {
         name: String,
     },
+    /// Replace the style guide.
+    SetGuide {
+        text: String,
+    },
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -145,6 +149,9 @@ pub enum OpError {
     #[error("{0}")]
     Invalid(String),
 }
+
+/// The style guide's size limit; it is sent to agents with `get_basic_info`.
+pub const MAX_GUIDE_BYTES: usize = 100_000;
 
 /// How deep frames may nest below an artboard. Renderers recurse per level, so this bounds their stack use.
 pub const MAX_DEPTH: usize = 100;
@@ -193,6 +200,8 @@ pub struct Document {
     pub(crate) tree: HashMap<NodeId, (Parent, String)>,
     children: HashMap<Parent, Vec<(String, NodeId)>>,
     pub tokens: BTreeMap<String, Token>,
+    /// The file's style guide: markdown rules and decisions that agents read before designing.
+    pub guide: String,
     pub assets: BTreeMap<String, Asset>,
     /// Next node and page counters (file-wide, outside undo history).
     pub next_node: u64,
@@ -615,6 +624,14 @@ impl Document {
                 self.dirty.meta = true;
                 Ok(Some(Op::SetFileName { name: old }))
             }
+            Op::SetGuide { text } => {
+                if text.len() > MAX_GUIDE_BYTES {
+                    return invalid(format!("the style guide is limited to {} KB", MAX_GUIDE_BYTES / 1000));
+                }
+                let old = std::mem::replace(&mut self.guide, text);
+                self.dirty.meta = true;
+                Ok(Some(Op::SetGuide { text: old }))
+            }
         }
     }
 }
@@ -811,6 +828,16 @@ mod tests {
         assert_eq!(doc.pages.len(), 1);
         doc.apply(inv).unwrap();
         assert_eq!(doc.page(id).unwrap().icon.as_deref(), Some("check"));
+    }
+
+    #[test]
+    fn guide_edits_undo_and_stay_bounded() {
+        let mut doc = Document::new("Guide");
+        let inv = doc.apply(Op::SetGuide { text: "- Flat".into() }).unwrap().unwrap();
+        assert_eq!(doc.guide, "- Flat");
+        doc.apply(inv).unwrap();
+        assert_eq!(doc.guide, "");
+        assert!(doc.apply(Op::SetGuide { text: "x".repeat(MAX_GUIDE_BYTES + 1) }).is_err());
     }
 
     #[test]
