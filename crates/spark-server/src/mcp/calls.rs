@@ -574,8 +574,13 @@ fn basic_info(d: &OpenDoc, args: &Value) -> R<Content> {
     let boards: Vec<NodeId> = doc.children(Parent::Page(page)).filter(|c| doc.node(*c).is_some()).collect();
     let artboards: Vec<Value> = boards.iter().take(100).map(|id| summary(doc, *id)).collect();
     let mut fonts = BTreeSet::new();
+    let mut node_count = 0;
     for p in &doc.pages {
-        for id in doc.descendants(Parent::Page(p.id)) {
+        let ids = doc.descendants(Parent::Page(p.id));
+        if p.id == page {
+            node_count = ids.len();
+        }
+        for id in ids {
             if let Some(f) = doc.node(id).and_then(|n| n.style.font_family.as_ref()) {
                 fonts.insert(f.split(',').next().unwrap_or("").trim().trim_matches(['"', '\'']).to_string());
             }
@@ -585,7 +590,7 @@ fn basic_info(d: &OpenDoc, args: &Value) -> R<Content> {
     let mut out = json!({
         "fileId": doc.id, "fileName": doc.name, "filePath": d.path,
         "pageId": page, "pageName": pg.name,
-        "nodeCount": doc.descendants(Parent::Page(page)).len(),
+        "nodeCount": node_count,
         "artboardCount": boards.len(),
         "artboards": artboards,
         "pages": doc.pages.iter().map(|p| json!({"type": if p.divider { "divider" } else { "page" }, "id": p.id, "name": p.name, "icon": p.icon, "isActive": p.id == page})).collect::<Vec<_>>(),
