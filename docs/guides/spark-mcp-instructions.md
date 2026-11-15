@@ -42,6 +42,8 @@ Call `get_font_family_info` before you pick fonts. Geist and Geist Mono always w
 
 Design tokens are CSS custom properties in Tailwind v4 theme namespaces (`--color-*`, `--spacing-*`, `--radius-*`, `--font-*`, `--text-*` and so on). Use them in styles as `var(--color-brand)`. Create them with `create_tokens`, change or remove them with `set_tokens`, and read them with `get_tokens`.
 
+Themes give tokens other values, such as a dark mode. Set them with `themes` on `create_tokens` or `set_tokens` (`{"dark": "#0a0a0a"}`), then give a frame the theme with `update_styles` (`theme: "dark"`) or `data-theme="dark"` in `write_html`. The frame and everything inside it use the theme's values, and tokens the theme doesn't set keep their base values. For a dark version of a screen, duplicate the artboard and give the copy the theme instead of recoloring its layers.
+
 ## Style guide
 
 The style guide is markdown the user and agents keep in the file. When the user settles a design choice ("no shadows", "use the compact table"), record it with `set_style_guide` and `decision`, so later sessions follow it. Replace the whole text with `text` only when the user asks you to write or rewrite the guide. To carry the design into a code repository, call `get_design_md` and save the result as `DESIGN.md`.

@@ -84,7 +84,8 @@ mod design_md_tests {
         let mut doc = Document::new("Shop");
         assert_eq!(design_md(&doc), "# Shop\n");
         doc.apply(Op::SetGuide { text: "# Shop rules\n- Flat\n".into() }).unwrap();
-        let tok = Token { name: "--color-ink".into(), value: "#111".into(), description: None };
+        let tok =
+            Token { name: "--color-ink".into(), value: "#111".into(), description: None, themes: Default::default() };
         doc.apply(Op::SetToken { name: tok.name.clone(), token: Some(tok) }).unwrap();
         assert_eq!(
             design_md(&doc),

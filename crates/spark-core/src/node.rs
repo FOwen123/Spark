@@ -128,6 +128,9 @@ pub struct Node {
     pub attrs: BTreeMap<String, String>,
     #[serde(default)]
     pub style: Style,
+    /// The token theme this layer and its contents use (`data-theme`); none uses the base values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exports: Vec<ExportPreset>,
     /// Column, row and grid guides drawn over a frame.
@@ -153,6 +156,7 @@ impl Node {
             tag: None,
             attrs: BTreeMap::new(),
             style: Style::default(),
+            theme: None,
             exports: Vec::new(),
             layout_guides: Vec::new(),
             image: None,

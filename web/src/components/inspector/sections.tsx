@@ -313,8 +313,9 @@ export function LayoutSection({ store, n, ids, setStyle }: Ctx) {
 
 const BLENDS = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"];
 
-export function AppearanceSection({ n, setStyle }: Ctx) {
+export function AppearanceSection({ store, n, setStyle, setProp }: Ctx) {
   const radius = n.style.radius;
+  const themes = [...new Set(store.tokens.flatMap((t) => Object.keys(t.themes ?? {})))].sort();
   const same = !radius || radius.every((r) => r === radius[0]);
   return (
     <Section title="Appearance">
@@ -349,6 +350,14 @@ export function AppearanceSection({ n, setStyle }: Ctx) {
         </div>
       )}
       <Select label="Blend mode" value={n.style.blend ?? "normal"} options={BLENDS.map((b) => [b, b[0].toUpperCase() + b.slice(1).replace("-", " ")])} onChange={(b) => setStyle({ mixBlendMode: b === "normal" ? null : b })} />
+      {n.kind === "frame" && (themes.length > 0 || n.theme) && (
+        <Select
+          label="Theme"
+          value={n.theme ?? ""}
+          options={[["", "Default theme"], ...[...new Set([...themes, ...(n.theme ? [n.theme] : [])])].map((t): [string, string] => [t, `Theme: ${t}`])]}
+          onChange={(t) => setProp("theme", t || null)}
+        />
+      )}
     </Section>
   );
 }

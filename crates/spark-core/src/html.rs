@@ -297,6 +297,8 @@ impl Ctx<'_, '_> {
         let mut node = Node::new(id, NodeKind::Frame);
         node.name = name_attr.unwrap_or_else(|| display_name(&tag));
         node.style = style;
+        node.theme =
+            el.value().attr("data-theme").filter(|t| crate::tokens::validate_theme(t).is_ok()).map(str::to_string);
         let nid = self.insert(node, parent, key);
         self.children(el, Parent::Node(nid));
         Some(nid)

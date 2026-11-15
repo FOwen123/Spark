@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { type DocStore, pendingReveal, tokenVars, useDoc } from "../lib/doc";
+import { type DocStore, pendingReveal, themeCss, tokenVars, useDoc } from "../lib/doc";
 import { loadFonts } from "../lib/fonts";
 import {
   type Camera,
@@ -1145,6 +1145,7 @@ export function Canvas(props: {
       <div
         ref={vp}
         data-testid="canvas"
+        data-tokens={store.file.id}
         className="relative min-w-0 flex-1 overflow-hidden"
         style={{
           ...tokenVars(store.tokens),
@@ -1167,6 +1168,7 @@ export function Canvas(props: {
           else props.onContextMenu?.(e);
         }}
       >
+        <style>{themeCss(store.file.id, store.tokens)}</style>
         <div ref={camEl} className="spark-camera" data-testid="camera">
           <LevelOfDetail.Provider value={true}>
             <PageContent store={store} page={store.page} />
