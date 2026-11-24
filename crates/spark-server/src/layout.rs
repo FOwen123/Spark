@@ -179,9 +179,12 @@ fn taffy_style(s: &Style, hidden: bool, parent: Option<&Style>, text: bool) -> t
     t
 }
 
-/// Whether any node in the subtree lacks a measured rect.
+/// Whether any node in the subtree that gets laid out lacks a measured rect. As in `build`, only
+/// frames' children are laid out (the shapes inside an inline SVG never get a box).
 fn needs_layout(doc: &Document, id: NodeId) -> bool {
-    std::iter::once(id).chain(doc.descendants(Parent::Node(id))).any(|n| !doc.measured.contains_key(&n))
+    !doc.measured.contains_key(&id)
+        || doc.node(id).is_some_and(|n| n.kind == NodeKind::Frame)
+            && doc.children(Parent::Node(id)).any(|c| needs_layout(doc, c))
 }
 
 /// Computes layout for the artboard containing `id` if anything in it is unmeasured, and records

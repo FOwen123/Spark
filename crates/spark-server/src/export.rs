@@ -176,10 +176,13 @@ fn load_downloaded(dir: &Path, seen: &mut HashSet<PathBuf>, db: &mut Arc<fontdb:
             let (Some(family), Some(src)) = (prop("font-family"), prop("src")) else { continue };
             let Some(file) = src.split_once("/fonts/file/").and_then(|(_, f)| f.split(')').next()) else { continue };
             let path = dir.join("files").join(file);
-            if !seen.insert(path.clone()) {
+            if seen.contains(&path) {
                 continue;
             }
-            let Some(ttf) = std::fs::read(&path).ok().and_then(|b| wuff::decompress_woff2(&b).ok()) else { continue };
+            // A file the canvas hasn't downloaded yet stays eligible for the next scan.
+            let Ok(bytes) = std::fs::read(&path) else { continue };
+            seen.insert(path);
+            let Ok(ttf) = wuff::decompress_woff2(&bytes) else { continue };
             if !ttf_parser::Face::parse(&ttf, 0).is_ok_and(|f| ('a'..='z').all(|c| f.glyph_index(c).is_some())) {
                 continue;
             }
@@ -586,18 +589,21 @@ mod tests {
         let files =
             concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/node_modules/@fontsource-variable/geist-mono/files");
         std::fs::create_dir(dir.path().join("files")).unwrap();
-        let mut css = String::new();
-        for subset in ["latin", "latin-ext"] {
-            let name = format!("geist-mono-{subset}-wght-normal.woff2");
-            std::fs::copy(format!("{files}/{name}"), dir.path().join("files").join(&name)).unwrap();
-            css +=
-                &format!("@font-face {{ font-family: 'Test Mono'; src: url(/fonts/file/{name}) format('woff2'); }}\n");
-        }
+        let name = |subset: &str| format!("geist-mono-{subset}-wght-normal.woff2");
+        let css = ["latin-ext", "latin"]
+            .map(|s| format!("@font-face {{ font-family: 'Test Mono'; src: url(/fonts/file/{}); }}\n", name(s)))
+            .concat();
         std::fs::write(dir.path().join("test-mono.css"), css).unwrap();
         let (mut seen, mut db) = (HashSet::new(), Arc::new(fontdb::Database::new()));
-        load_downloaded(dir.path(), &mut seen, &mut db);
-        load_downloaded(dir.path(), &mut seen, &mut db);
-        assert_eq!(db.len(), 1, "only the Latin subset, once");
+        // The canvas downloads each file on first use, so they arrive one at a time.
+        let mut scan_after_download = |subset: &str| {
+            std::fs::copy(format!("{files}/{}", name(subset)), dir.path().join("files").join(name(subset))).unwrap();
+            load_downloaded(dir.path(), &mut seen, &mut db);
+            db.len()
+        };
+        assert_eq!(scan_after_download("latin-ext"), 0, "not the Latin subset");
+        assert_eq!(scan_after_download("latin"), 1, "the Latin file, downloaded after the first scan");
+        assert_eq!(scan_after_download("latin"), 1, "loaded once");
         let q = fontdb::Query { families: &[fontdb::Family::Name("Test Mono")], ..Default::default() };
         assert!(db.query(&q).is_some(), "found by its CSS family name");
     }
