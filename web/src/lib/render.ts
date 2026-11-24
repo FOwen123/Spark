@@ -27,8 +27,8 @@ async function imagesReady(root: HTMLElement) {
   })));
 }
 
-/** Renders `nodeId` to a base64 PNG at `scale` (capped at 4096 px per side). */
-export async function renderToPng(store: DocStore, nodeId: string, scale: number): Promise<string> {
+/** Renders `nodeId`'s artboard off screen with its fonts loaded, runs `use` on the registered elements, then cleans up. */
+async function offscreen<T>(store: DocStore, nodeId: string, use: (reg: Map<string, HTMLElement | SVGElement>) => Promise<T>): Promise<T> {
   const board = store.artboardOf(nodeId);
   if (!board) throw new Error(`node ${nodeId} is not on a page`);
   const host = document.createElement("div");
@@ -47,6 +47,17 @@ export async function renderToPng(store: DocStore, nodeId: string, scale: number
     root.render(createElement(ElementRegistry.Provider, { value: reg }, createElement(NodeEl, { store, id: board })));
     await frames(2);
     await document.fonts.ready;
+    return await use(reg);
+  } finally {
+    root.unmount();
+    host.remove();
+    themes.remove();
+  }
+}
+
+/** Renders `nodeId` to a base64 PNG at `scale` (capped at 4096 px per side). */
+export function renderToPng(store: DocStore, nodeId: string, scale: number): Promise<string> {
+  return offscreen(store, nodeId, async (reg) => {
     const el = reg.get(nodeId) as HTMLElement | undefined;
     if (!el) throw new Error(`node ${nodeId} did not render`);
     await imagesReady(el);
@@ -60,9 +71,26 @@ export async function renderToPng(store: DocStore, nodeId: string, scale: number
       style: { left: "0px", top: "0px", right: "auto", bottom: "auto", margin: "0", position: "relative", transform: "none", rotate: "none" },
     });
     return url.slice(url.indexOf(",") + 1);
-  } finally {
-    root.unmount();
-    host.remove();
-    themes.remove();
-  }
+  });
+}
+
+/** Lays out an artboard off screen and returns each layer's box relative to it, as the canvas measures them. */
+export function measureBoard(store: DocStore, boardId: string): Promise<Record<string, [number, number, number, number]>> {
+  return offscreen(store, boardId, async (reg) => {
+    const origin = reg.get(boardId)?.getBoundingClientRect();
+    if (!origin) throw new Error(`node ${boardId} did not render`);
+    const round = (n: number) => Math.round(n * 100) / 100;
+    const out: Record<string, [number, number, number, number]> = {};
+    const visit = (id: string) => {
+      const el = reg.get(id);
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      if (r.width === 0 && r.height === 0 && (el as HTMLElement).style?.display === "none") return;
+      out[id] = [round(r.left - origin.left), round(r.top - origin.top), round(r.width), round(r.height)];
+      if (store.nodes.get(id)?.kind === "svg") return;
+      for (const k of store.kids(id)) visit(k);
+    };
+    visit(boardId);
+    return out;
+  });
 }

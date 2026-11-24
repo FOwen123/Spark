@@ -99,7 +99,7 @@ pub struct Agent {
     pub last_seen: Instant,
 }
 
-type RenderReply = oneshot::Sender<Result<Vec<u8>, String>>;
+type RenderReply = oneshot::Sender<Result<Value, String>>;
 
 /// A native action provided by the desktop shell, called with a command name.
 pub type NativeAction = Box<dyn Fn(&str) + Send + Sync>;
@@ -503,6 +503,19 @@ impl Hub {
 
     /// Asks a connected UI to rasterize a node to PNG. Prefers a window viewing the file.
     pub async fn render(&self, file: &str, node: NodeId, scale: f64) -> Result<Vec<u8>, String> {
+        use base64::Engine;
+        let data = self.ask_ui(file, json!({"t": "render", "file": file, "node": node, "scale": scale})).await?;
+        base64::engine::general_purpose::STANDARD.decode(data.as_str().unwrap_or_default()).map_err(|e| e.to_string())
+    }
+
+    /// Asks a connected UI to lay out an artboard off screen. Returns each layer's box as
+    /// `[x, y, w, h]` relative to the artboard, by node id.
+    pub async fn measure(&self, file: &str, board: NodeId) -> Result<Value, String> {
+        self.ask_ui(file, json!({"t": "render", "measure": true, "file": file, "node": board})).await
+    }
+
+    /// Sends a render request to a UI window, preferring one viewing the file, and waits for it.
+    async fn ask_ui(&self, file: &str, mut msg: Value) -> Result<Value, String> {
         let viewer = self.viewing.lock().unwrap().iter().rev().find(|(_, f)| f == file).map(|(c, _)| *c);
         let subscriber = self.get(file).and_then(|d| d.lock().unwrap().subscribers.keys().next().copied());
         let any = self.client_ids().into_iter().next();
@@ -510,9 +523,9 @@ impl Hub {
             "Spark's window isn't open, so it can't render. Ask the user to open Spark, then try again.".to_string()
         })?;
         let call = self.next_call.fetch_add(1, Ordering::Relaxed);
+        msg["callId"] = json!(call);
         let (tx, rx) = oneshot::channel();
         self.renders.lock().unwrap().insert(call, tx);
-        let msg = json!({"t": "render", "callId": call, "file": file, "node": node, "scale": scale});
         if !self.send_to(client, &msg) {
             self.renders.lock().unwrap().remove(&call);
             return Err("lost the connection to Spark's window".into());
@@ -526,7 +539,7 @@ impl Hub {
         }
     }
 
-    pub fn render_done(&self, call: u64, result: Result<Vec<u8>, String>) {
+    pub fn render_done(&self, call: u64, result: Result<Value, String>) {
         if let Some(tx) = self.renders.lock().unwrap().remove(&call) {
             let _ = tx.send(result);
         }

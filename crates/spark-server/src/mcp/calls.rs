@@ -236,6 +236,7 @@ pub async fn call(app: &AppState, session: &str, name: &str, args: &Value) -> R<
         "export_combined_pdf" => {
             let doc = doc_for(app, args)?;
             let ids = ids_arg(args, "nodeIds")?;
+            crate::export::browser_layout(Some(&app.hub), &doc, &ids).await?;
             let (bytes, name, head) = {
                 let mut d = doc.lock().unwrap();
                 for id in &ids {

@@ -80,3 +80,24 @@ test("export presets from the inspector produce valid files in every format", as
     await agent.close();
   }
 });
+
+test("SVG and PDF export use the browser's layout, even for artboards the canvas hasn't measured", async ({ page }) => {
+  await newFile(page);
+  const agent = await connectAgent("Export layout agent");
+  try {
+    // Far off screen, so the canvas never lays it out at full detail and measures it.
+    const board = await callJson<{ id: string }>(agent, "create_artboard", { name: "Grid", styles: { left: "90000px", top: "90000px", width: "400px", height: "200px" } });
+    // Spark's own layout ignores grid templates; only a browser puts the cells side by side.
+    await callJson(agent, "write_html", {
+      targetNodeId: board.id,
+      html: '<div style="display:grid;grid-template-columns:1fr 1fr;width:400px"><div style="height:100px;background:#ff0000"></div><div style="height:100px;background:#0000ff"></div></div>',
+    });
+    const out = await callJson<{ files: { path: string }[] }>(agent, "export", { nodes: { [board.id]: [{ format: "svg" }, { format: "pdf" }] } });
+    const svg = readFileSync(out.files[0].path, "utf8");
+    const blue = svg.match(/<rect x="([\d.]+)" y="([\d.]+)"[^>]*fill="#0000ff"/);
+    expect(blue?.slice(1).map(Number)).toEqual([200, 0]);
+    expect((await PDFDocument.load(readFileSync(out.files[1].path))).getPageCount()).toBe(1);
+  } finally {
+    await agent.close();
+  }
+});

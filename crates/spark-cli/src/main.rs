@@ -161,6 +161,7 @@ async fn export(
     out: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     use spark_server::export as ex;
+    ex::preload_fonts(&spark_server::config::default_dir());
     let (store, mut doc) = spark_core::store::Store::open(&file)?;
     let text_out = |text: String| -> anyhow::Result<()> {
         match &out {

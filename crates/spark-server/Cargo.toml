@@ -34,6 +34,7 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2-zli
 tokio.workspace = true
 tower-http.workspace = true
 trash = "5.2.9"
+wuff = { version = "0.2", default-features = false, features = ["brotli"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

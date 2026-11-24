@@ -178,7 +178,9 @@ pub async fn file(State(app): State<AppState>, Path(path): Path<String>) -> Resp
             let [.., files] = hosts();
             match fetch(&format!("{files}/{path}")).await {
                 Ok(b) => {
-                    let _ = crate::config::write_private(&local, &b);
+                    if crate::config::write_private(&local, &b).is_ok() {
+                        crate::export::fonts_changed();
+                    }
                     b
                 }
                 Err(e) => return (StatusCode::BAD_GATEWAY, e).into_response(),
