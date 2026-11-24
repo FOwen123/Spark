@@ -266,7 +266,7 @@ pub fn prepare(
 ) -> anyhow::Result<(Arc<Hub>, impl std::future::Future<Output = anyhow::Result<()>>)> {
     let port = listener.local_addr()?.port();
     config.write_port(port)?;
-    export::preload_fonts();
+    export::preload_fonts(&config.dir);
     let hub = Hub::new(config);
     hub.port.store(port, std::sync::atomic::Ordering::Relaxed);
     let h = hub.clone();

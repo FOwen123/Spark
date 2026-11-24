@@ -161,6 +161,7 @@ async fn export(
     out: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     use spark_server::export as ex;
+    ex::preload_fonts(&spark_server::config::default_dir());
     let (store, mut doc) = spark_core::store::Store::open(&file)?;
     let text_out = |text: String| -> anyhow::Result<()> {
         match &out {
@@ -191,7 +192,7 @@ async fn export(
     }
     let dir = out.unwrap_or_else(|| PathBuf::from("."));
     if combined {
-        let bytes = ex::combined_pdf(&mut doc, &ids).map_err(anyhow::Error::msg)?;
+        let bytes = ex::combined_pdf(&mut doc, &ids, &Default::default()).map_err(anyhow::Error::msg)?;
         say(&ex::save(&dir, &doc.name, "pdf", &bytes).map_err(anyhow::Error::msg)?.display().to_string());
         return Ok(());
     }

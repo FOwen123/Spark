@@ -106,6 +106,42 @@ fn taffy_style(s: &Style, hidden: bool, parent: Option<&Style>, text: bool) -> t
     if let Some([a, b, c, d]) = &s.padding {
         t.padding = taffy::Rect { top: lp(a), right: lp(b), bottom: lp(c), left: lp(d) };
     }
+    // Logical padding and margins aren't modelled, so they sit in `raw`; raw CSS comes after the
+    // modelled properties on the canvas, so it wins here too. `None` is `auto`.
+    let raw = |k: &str| -> Option<Vec<Option<Len>>> {
+        let v = s.raw.get(k).filter(|_| !s.disabled.contains(k))?;
+        let vals: Vec<Option<Len>> = v
+            .split_whitespace()
+            .map(|w| if w == "auto" { Some(None) } else { Len::parse(w, false).map(Some) })
+            .collect::<Option<_>>()?;
+        (1..=4).contains(&vals.len()).then_some(vals)
+    };
+    let pad = |v: &Option<Len>| v.as_ref().map_or(LengthPercentage::length(0.0), lp);
+    if let Some(v) = raw("padding-inline") {
+        (t.padding.left, t.padding.right) = (pad(&v[0]), pad(v.get(1).unwrap_or(&v[0])));
+    }
+    if let Some(v) = raw("padding-block") {
+        (t.padding.top, t.padding.bottom) = (pad(&v[0]), pad(v.get(1).unwrap_or(&v[0])));
+    }
+    if let Some(v) = raw("margin") {
+        let [top, right, bottom, left] = match &v[..] {
+            [a] => [a, a, a, a],
+            [a, b] => [a, b, a, b],
+            [a, b, c] => [a, b, c, b],
+            v => [&v[0], &v[1], &v[2], &v[3]],
+        };
+        t.margin = taffy::Rect { top: lpa(top), right: lpa(right), bottom: lpa(bottom), left: lpa(left) };
+    }
+    for (side, m) in [
+        ("top", &mut t.margin.top),
+        ("right", &mut t.margin.right),
+        ("bottom", &mut t.margin.bottom),
+        ("left", &mut t.margin.left),
+    ] {
+        if let Some(v) = raw(&format!("margin-{side}")).filter(|v| v.len() == 1) {
+            *m = lpa(&v[0]);
+        }
+    }
     if let Some(b) = &s.border {
         let w = |v: f64| LengthPercentage::length(v as f32);
         t.border = taffy::Rect { top: w(b.width[0]), right: w(b.width[1]), bottom: w(b.width[2]), left: w(b.width[3]) };
@@ -143,9 +179,12 @@ fn taffy_style(s: &Style, hidden: bool, parent: Option<&Style>, text: bool) -> t
     t
 }
 
-/// Whether any node in the subtree lacks a measured rect.
+/// Whether any node in the subtree that gets laid out lacks a measured rect. As in `build`, only
+/// frames' children are laid out (the shapes inside an inline SVG never get a box).
 fn needs_layout(doc: &Document, id: NodeId) -> bool {
-    std::iter::once(id).chain(doc.descendants(Parent::Node(id))).any(|n| !doc.measured.contains_key(&n))
+    !doc.measured.contains_key(&id)
+        || doc.node(id).is_some_and(|n| n.kind == NodeKind::Frame)
+            && doc.children(Parent::Node(id)).any(|c| needs_layout(doc, c))
 }
 
 /// Computes layout for the artboard containing `id` if anything in it is unmeasured, and records
@@ -266,5 +305,32 @@ mod tests {
         assert_eq!(a.w, b.w);
         assert_eq!(b.x - a.x, a.w + 8.0);
         assert!((r.h - (20.0 + 40.0 + 10.0 + text.h + 10.0 + 30.0 + 20.0)).abs() < 1.0, "hug height {r:?}");
+    }
+
+    #[test]
+    fn logical_padding_and_margins_shape_the_layout() {
+        let mut doc = Document::new("L");
+        let page = doc.pages[0].id;
+        let imp = import(
+            &mut doc,
+            r#"<div style="position:absolute;left:0;top:0;width:400px;display:flex;flex-direction:column;padding:8px 0 36px 0;padding-inline:20px">
+                <div style="display:flex;align-items:start;padding-block:9px;padding-inline:12px">
+                    <div style="width:40px;height:40px;margin-top:2px"></div>
+                </div>
+            </div>"#,
+            Parent::Page(page),
+            None,
+            &mut |_| ImageSrc::Failed(String::new()),
+        );
+        for op in imp.ops {
+            doc.apply(op).unwrap();
+        }
+        let board = imp.roots[0];
+        ensure(&mut doc, board);
+        let row = doc.children(Parent::Node(board)).next().unwrap();
+        let icon = doc.children(Parent::Node(row)).next().unwrap();
+        let (row, icon) = (doc.measured[&row], doc.measured[&icon]);
+        assert_eq!((row.x, row.y, row.w, row.h), (20.0, 8.0, 360.0, 60.0));
+        assert_eq!((icon.x, icon.y), (32.0, 19.0));
     }
 }

@@ -183,9 +183,10 @@ fn handle(hub: &Arc<Hub>, client: ClientId, tx: &Tx, msg: Value) {
                     let dir = crate::export::downloads_dir();
                     let mut paths = Vec::new();
                     if msg["combined"].as_bool().unwrap_or(false) {
+                        let boxes = crate::export::browser_layout(Some(&hub), &doc, &ids).await?;
                         let (bytes, name) = {
                             let mut d = doc.lock().unwrap();
-                            (crate::export::combined_pdf(&mut d.editor.doc, &ids)?, d.editor.doc.name.clone())
+                            (crate::export::combined_pdf(&mut d.editor.doc, &ids, &boxes)?, d.editor.doc.name.clone())
                         };
                         paths.push(crate::export::save(&dir, &name, "pdf", &bytes)?);
                     } else {
@@ -221,11 +222,9 @@ fn handle(hub: &Arc<Hub>, client: ClientId, tx: &Tx, msg: Value) {
         }
         "agentStop" => reply(tx, &rid, Ok(json!(crate::runner::stop(msg["runId"].as_u64().unwrap_or(0))))),
         "rendered" => {
-            use base64::Engine;
             let call = msg["callId"].as_u64().unwrap_or(0);
             let result = if msg["ok"].as_bool().unwrap_or(false) {
-                let data = msg["data"].as_str().unwrap_or_default();
-                base64::engine::general_purpose::STANDARD.decode(data).map_err(|e| e.to_string())
+                Ok(msg["data"].clone())
             } else {
                 Err(msg["error"].as_str().unwrap_or("render failed").to_string())
             };

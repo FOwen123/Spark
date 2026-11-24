@@ -80,3 +80,40 @@ test("export presets from the inspector produce valid files in every format", as
     await agent.close();
   }
 });
+
+test("SVG and PDF export use the browser's layout, even for artboards the canvas hasn't measured", async ({ page }) => {
+  await newFile(page);
+  const agent = await connectAgent("Export layout agent");
+  try {
+    const board = await callJson<{ id: string }>(agent, "create_artboard", { name: "Grid", styles: { width: "400px", height: "200px" } });
+    // Far off screen, so the canvas never lays it out at full detail and measures it.
+    await callJson(agent, "update_styles", { updates: [{ nodeIds: [board.id], styles: { left: "90000px", top: "90000px" } }] });
+    const write = (targetNodeId: string, html: string) => callJson<{ created: { id: string }[] }>(agent, "write_html", { targetNodeId, html });
+    // Spark's own layout ignores grid templates; only a browser puts the cells side by side.
+    await write(board.id, '<div style="display:grid;grid-template-columns:1fr 1fr;width:400px"><div style="height:100px;background:#ff0000"></div><div style="height:100px;background:#0000ff"></div></div>');
+    // Paths inside an inline SVG get no layout box of their own; they mustn't send the export back to Spark's layout.
+    await write(board.id, '<svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 0h10v10z"/></svg>');
+    // Export turns the unturned box itself, so a rotated layer keeps its own size.
+    await write(board.id, '<div style="position:absolute;left:300px;top:150px;width:80px;height:20px;rotate:90deg;background:#00ff00"></div>');
+    // A turned frame is the containing block of its absolute children, even when it's position: static.
+    await write(board.id, '<div style="position:static;margin-left:100px;width:60px;height:60px;rotate:45deg;background:#ffff00"><div style="position:absolute;left:10px;top:10px;width:10px;height:10px;background:#ff00ff"></div></div>');
+    const out = await callJson<{ files: { path: string }[] }>(agent, "export", { nodes: { [board.id]: [{ format: "svg" }, { format: "pdf" }] } });
+    const svg = readFileSync(out.files[0].path, "utf8");
+    const box = (fill: string) => svg.match(new RegExp(`<rect x="([\\d.-]+)" y="([\\d.-]+)" width="([\\d.]+)" height="([\\d.]+)"[^>]*fill="${fill}"`))?.slice(1).map(Number) ?? [];
+    expect(box("#0000ff").slice(0, 2)).toEqual([200, 0]);
+    expect(box("#00ff00").slice(2)).toEqual([80, 20]);
+    const [[yx, yy], [mx, my]] = [box("#ffff00"), box("#ff00ff")];
+    expect([mx - yx, my - yy]).toEqual([10, 10]);
+    expect((await PDFDocument.load(readFileSync(out.files[1].path))).getPageCount()).toBe(1);
+
+    // On an artboard the canvas measures, the turned layer's box stays the canvas's turned bounds after an export.
+    const desktop = (await callJson<{ artboards: { id: string }[] }>(agent, "get_basic_info")).artboards[0].id;
+    const [turned] = (await write(desktop, '<div style="position:absolute;left:40px;top:40px;width:80px;height:20px;rotate:90deg;background:#00ffff"></div>')).created;
+    const width = async () => (await callJson<{ width: number }>(agent, "get_node_info", { nodeId: turned.id })).width;
+    await expect.poll(width).toBe(20);
+    await callJson(agent, "export", { nodes: { [desktop]: [{ format: "svg" }] } });
+    expect(await width()).toBe(20);
+  } finally {
+    await agent.close();
+  }
+});

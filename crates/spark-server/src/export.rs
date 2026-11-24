@@ -3,8 +3,12 @@
 //! Files land in the user's Downloads (or a given folder) without overwriting anything.
 
 use std::{
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Arc, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use resvg::usvg::{self, fontdb};
@@ -116,10 +120,28 @@ const BUNDLED: &[&[u8]] = &[
     include_bytes!("../fonts/GeistMono-Bold.ttf"),
 ];
 
-/// System fonts plus Spark's bundled Geist, shared by measurement, SVG raster and PDF.
+/// Spark's config dir, whose `fonts/files` holds the Google Fonts the canvas downloaded.
+static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
+/// Bumped when a font is downloaded, so the next export picks it up.
+static FONTS_GEN: AtomicU64 = AtomicU64::new(0);
+
+/// Marks the downloaded fonts as changed.
+pub fn fonts_changed() {
+    FONTS_GEN.fetch_add(1, Ordering::Relaxed);
+}
+
+/// System fonts, Spark's bundled Geist and downloaded Google Fonts, shared by measurement, SVG
+/// raster and PDF.
 pub fn fonts() -> Arc<fontdb::Database> {
-    static DB: OnceLock<Arc<fontdb::Database>> = OnceLock::new();
-    DB.get_or_init(|| {
+    struct Loaded {
+        generation: u64,
+        seen: HashSet<PathBuf>,
+        db: Arc<fontdb::Database>,
+    }
+    static DB: Mutex<Option<Loaded>> = Mutex::new(None);
+    let generation = FONTS_GEN.load(Ordering::Relaxed);
+    let mut lock = DB.lock().unwrap();
+    let loaded = lock.get_or_insert_with(|| {
         let mut db = fontdb::Database::new();
         db.load_system_fonts();
         for f in BUNDLED {
@@ -127,9 +149,56 @@ pub fn fonts() -> Arc<fontdb::Database> {
         }
         db.set_sans_serif_family("Geist");
         db.set_monospace_family("Geist Mono");
-        Arc::new(db)
-    })
-    .clone()
+        Loaded { generation: u64::MAX, seen: HashSet::new(), db: Arc::new(db) }
+    });
+    if loaded.generation != generation {
+        loaded.generation = generation;
+        if let Some(dir) = CONFIG_DIR.get() {
+            load_downloaded(&dir.join("fonts"), &mut loaded.seen, &mut loaded.db);
+        }
+    }
+    loaded.db.clone()
+}
+
+/// Adds the downloaded Google Fonts in `dir` (Spark's `fonts` cache) not in `seen`, named as their
+/// cached `@font-face` rules name them, as the browser does: a file's own family name can differ
+/// ("DM Sans 9pt"). Google splits a family into Unicode subsets; only the Latin one has the whole
+/// a-z, and loading just that keeps font matching on the subset that covers most text.
+// shortcut: other subsets (Cyrillic, CJK slices) fall back to installed fonts; load them per character if designs need it.
+fn load_downloaded(dir: &Path, seen: &mut HashSet<PathBuf>, db: &mut Arc<fontdb::Database>) {
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        if e.path().extension().is_none_or(|x| x != "css") {
+            continue;
+        }
+        let Ok(css) = std::fs::read_to_string(e.path()) else { continue };
+        for rule in css.split("@font-face").skip(1) {
+            let prop = |name: &str| Some(rule.split_once(&format!("{name}:"))?.1.split([';', '}']).next()?.trim());
+            let (Some(family), Some(src)) = (prop("font-family"), prop("src")) else { continue };
+            let Some(file) = src.split_once("/fonts/file/").and_then(|(_, f)| f.split(')').next()) else { continue };
+            let path = dir.join("files").join(file);
+            if seen.contains(&path) {
+                continue;
+            }
+            // A file the canvas hasn't downloaded yet stays eligible for the next scan.
+            let Ok(bytes) = std::fs::read(&path) else { continue };
+            seen.insert(path);
+            let Ok(ttf) = wuff::decompress_woff2(&bytes) else { continue };
+            if !ttf_parser::Face::parse(&ttf, 0).is_ok_and(|f| ('a'..='z').all(|c| f.glyph_index(c).is_some())) {
+                continue;
+            }
+            let db = Arc::make_mut(db);
+            for id in db.load_font_source(fontdb::Source::Binary(Arc::new(ttf))) {
+                let Some(mut face) = db.face(id).cloned() else { continue };
+                db.remove_face(id);
+                face.families =
+                    vec![(family.trim_matches(['\'', '"']).to_string(), fontdb::Language::English_UnitedStates)];
+                if prop("font-style") == Some("italic") {
+                    face.style = fontdb::Style::Italic;
+                }
+                db.push_face_info(face);
+            }
+        }
+    }
 }
 
 /// Just the bundled Geist fonts: instant to load, and what most designs use.
@@ -146,8 +215,10 @@ fn bundled_fonts() -> &'static fontdb::Database {
     })
 }
 
-/// Loads the system font list in the background so the first export doesn't wait for it.
-pub fn preload_fonts() {
+/// Loads the font list in the background so the first export doesn't wait for it. `config_dir`
+/// holds the downloaded Google Fonts.
+pub fn preload_fonts(config_dir: &Path) {
+    let _ = CONFIG_DIR.set(config_dir.to_path_buf());
     std::thread::spawn(fonts);
 }
 
@@ -163,7 +234,7 @@ struct Advances {
 /// Width of one line of text with real glyph advances (falls back to 0.55 em per character).
 pub fn measure(text: &str, s: &svg::TextStyle) -> f64 {
     thread_local! {
-        static CACHE: std::cell::RefCell<std::collections::HashMap<FaceKey, Advances>> = Default::default();
+        static CACHE: std::cell::RefCell<(u64, std::collections::HashMap<FaceKey, Advances>)> = Default::default();
     }
     let lower = s.family.to_ascii_lowercase();
     let bundled = matches!(
@@ -173,7 +244,12 @@ pub fn measure(text: &str, s: &svg::TextStyle) -> f64 {
     let with_db =
         |f: &mut dyn FnMut(&fontdb::Database) -> f64| -> f64 { if bundled { f(bundled_fonts()) } else { f(&fonts()) } };
     CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
+        let (generation, cache) = &mut *cache.borrow_mut();
+        // A downloaded font can fill a face that was missing before.
+        let now = FONTS_GEN.load(Ordering::Relaxed);
+        if *generation != now {
+            (*generation, *cache) = (now, Default::default());
+        }
         let entry = cache.entry((lower.clone(), s.weight, s.italic)).or_insert_with(|| {
             let mut found = (None, 1000.0);
             with_db(&mut |db| {
@@ -240,9 +316,11 @@ fn tree(svg: &str) -> Result<usvg::Tree, String> {
 }
 
 /// Rasterizes SVG at `scale` with resvg (used when no UI window is available to render).
-pub fn rasterize(svg: &str, scale: f64) -> Result<image::RgbaImage, String> {
+pub fn rasterize(svg: &str, scale: Scale) -> Result<image::RgbaImage, String> {
     let tree = tree(svg)?;
     let size = tree.size();
+    // A target width or height applies to the image as drawn (a turned layer's SVG fits its turned bounds).
+    let scale = scale.factor(size.width() as f64, size.height() as f64);
     let (w, h) =
         ((size.width() as f64 * scale).ceil().max(1.0) as u32, (size.height() as f64 * scale).ceil().max(1.0) as u32);
     let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h).ok_or("image too large")?;
@@ -328,15 +406,17 @@ pub async fn export_node(
     scale: Scale,
     quality: u8,
 ) -> Result<(String, Vec<u8>), String> {
+    let boxes =
+        if matches!(format, Format::Svg | Format::Pdf) { browser_layout(hub, doc, &[id]).await? } else { Boxes::new() };
     let (file, name, svg, rect, code) = {
         let mut d = doc.lock().unwrap();
         crate::layout::ensure(&mut d.editor.doc, id);
-        let n = d.editor.doc.node(id).ok_or_else(|| format!("node {id} not found"))?;
+        let name = d.editor.doc.node(id).ok_or_else(|| format!("node {id} not found"))?.name.clone();
         let rect = d.editor.doc.measured.get(&id).copied();
         let svg = if matches!(format, Format::Svg | Format::Pdf)
             || (format.is_raster() && hub.is_none_or(|h| h.client_ids().is_empty()))
         {
-            Some(node_svg(&d.editor.doc, id)?)
+            Some(with_boxes(&mut d.editor.doc, &boxes, |doc| node_svg(doc, id))?)
         } else {
             None
         };
@@ -369,7 +449,7 @@ pub async fn export_node(
             }
             _ => None,
         };
-        (d.id().to_string(), n.name.clone(), svg, rect, code)
+        (d.id().to_string(), name, svg, rect, code)
     };
     let bytes = match format {
         Format::Svg => svg.unwrap().into_bytes(),
@@ -377,14 +457,13 @@ pub async fn export_node(
         Format::Html => format!("<!doctype html>\n<html>\n<head><meta charset=\"utf-8\"><title>{name}</title></head>\n<body style=\"margin:0\">\n{}</body>\n</html>\n", code.unwrap()).into_bytes(),
         Format::Jsx | Format::Tailwind => format!("export default function Design() {{\n  return (\n{}  );\n}}\n", code.unwrap().lines().map(|l| format!("    {l}\n")).collect::<String>()).into_bytes(),
         _ => {
-            let r = rect.ok_or_else(|| format!("{name} has no measured size yet; open the file in Spark once"))?;
-            let factor = scale.factor(r.w, r.h);
             let img = match (hub, svg) {
                 (Some(h), None) => {
-                    let png = h.render(&file, id, factor).await?;
+                    let r = rect.ok_or_else(|| format!("{name} has no measured size yet; open the file in Spark once"))?;
+                    let png = h.render(&file, id, scale.factor(r.w, r.h)).await?;
                     image::load_from_memory(&png).map_err(|e| e.to_string())?.to_rgba8()
                 }
-                (_, Some(svg)) => rasterize(&svg, factor)?,
+                (_, Some(svg)) => rasterize(&svg, scale)?,
                 (None, None) => unreachable!(),
             };
             encode(&img, format, quality)?
@@ -393,11 +472,65 @@ pub async fn export_node(
     Ok((name, bytes))
 }
 
+/// Layer boxes (world space, unturned) that stand in for the measured ones while exporting.
+pub type Boxes = HashMap<NodeId, spark_core::Rect>;
+
+/// When a Spark window is connected, lays out the artboards holding `ids` in the browser and
+/// returns those boxes, so SVG and PDF match the canvas instead of Spark's own approximate
+/// layout (which also stands in for artboards the canvas hasn't drawn up close).
+pub async fn browser_layout(hub: Option<&Hub>, doc: &crate::hub::DocRef, ids: &[NodeId]) -> Result<Boxes, String> {
+    let mut boxes = Boxes::new();
+    let Some(hub) = hub.filter(|h| !h.client_ids().is_empty()) else { return Ok(boxes) };
+    let (file, boards) = {
+        let d = doc.lock().unwrap();
+        let mut boards: Vec<NodeId> = Vec::new();
+        for b in ids.iter().filter_map(|id| d.editor.doc.artboard_of(*id)) {
+            if !boards.contains(&b) {
+                boards.push(b);
+            }
+        }
+        (d.id().to_string(), boards)
+    };
+    for board in boards {
+        let rects = hub.measure(&file, board).await?;
+        let mut d = doc.lock().unwrap();
+        // The artboard keeps its place; everything else is positioned from it.
+        crate::layout::ensure(&mut d.editor.doc, board);
+        let Some(origin) = d.editor.doc.measured.get(&board).copied() else { continue };
+        for (id, r) in rects.as_object().into_iter().flatten() {
+            let (Ok(id), Some(a)) = (id.parse::<NodeId>(), r.as_array()) else { continue };
+            let n: Vec<f64> = a.iter().filter_map(serde_json::Value::as_f64).collect();
+            if let [x, y, w, h] = n[..] {
+                boxes.insert(id, spark_core::Rect { x: origin.x + x, y: origin.y + y, w, h });
+            }
+        }
+    }
+    Ok(boxes)
+}
+
+/// Runs `f` with `boxes` in place of the measured ones, then puts those back: export boxes are
+/// unturned, while the canvas and agents keep the canvas's own (turned) bounds.
+fn with_boxes<T>(doc: &mut Document, boxes: &Boxes, f: impl FnOnce(&Document) -> T) -> T {
+    if boxes.is_empty() {
+        return f(doc);
+    }
+    let saved = doc.measured.clone();
+    doc.measured.extend(boxes);
+    let out = f(doc);
+    doc.measured = saved;
+    out
+}
+
 /// Exports several nodes as one PDF, a page each, ordered top to bottom then left to right.
-pub fn combined_pdf(doc: &mut Document, ids: &[NodeId]) -> Result<Vec<u8>, String> {
+/// `boxes` come from `browser_layout`.
+pub fn combined_pdf(doc: &mut Document, ids: &[NodeId], boxes: &Boxes) -> Result<Vec<u8>, String> {
     for id in ids {
         crate::layout::ensure(doc, *id);
     }
+    with_boxes(doc, boxes, |doc| combined_pdf_of(doc, ids))
+}
+
+fn combined_pdf_of(doc: &Document, ids: &[NodeId]) -> Result<Vec<u8>, String> {
     let mut ordered: Vec<(NodeId, spark_core::Rect)> = ids
         .iter()
         .map(|id| doc.measured.get(id).map(|r| (*id, *r)).ok_or_else(|| format!("{id} has no measured size yet")))
@@ -473,10 +606,37 @@ mod tests {
     }
 
     #[test]
+    fn loads_the_latin_subset_of_downloaded_fonts() {
+        let dir = tempfile::tempdir().unwrap();
+        let files =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/node_modules/@fontsource-variable/geist-mono/files");
+        std::fs::create_dir(dir.path().join("files")).unwrap();
+        let name = |subset: &str| format!("geist-mono-{subset}-wght-normal.woff2");
+        let css = ["latin-ext", "latin"]
+            .map(|s| format!("@font-face {{ font-family: 'Test Mono'; src: url(/fonts/file/{}); }}\n", name(s)))
+            .concat();
+        std::fs::write(dir.path().join("test-mono.css"), css).unwrap();
+        let (mut seen, mut db) = (HashSet::new(), Arc::new(fontdb::Database::new()));
+        // The canvas downloads each file on first use, so they arrive one at a time.
+        let mut scan_after_download = |subset: &str| {
+            std::fs::copy(format!("{files}/{}", name(subset)), dir.path().join("files").join(name(subset))).unwrap();
+            load_downloaded(dir.path(), &mut seen, &mut db);
+            db.len()
+        };
+        assert_eq!(scan_after_download("latin-ext"), 0, "not the Latin subset");
+        assert_eq!(scan_after_download("latin"), 1, "the Latin file, downloaded after the first scan");
+        assert_eq!(scan_after_download("latin"), 1, "loaded once");
+        let q = fontdb::Query { families: &[fontdb::Family::Name("Test Mono")], ..Default::default() };
+        assert!(db.query(&q).is_some(), "found by its CSS family name");
+    }
+
+    #[test]
     fn rasterizes_encodes_and_makes_pdf() {
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#ff0000"/><text x="2" y="15" font-family="Geist" font-size="12">Hi</text></svg>"##;
-        let img = rasterize(svg, 2.0).unwrap();
+        let img = rasterize(svg, Scale::Factor(2.0)).unwrap();
         assert_eq!((img.width(), img.height()), (80, 40));
+        let wide = rasterize(svg, Scale::Width(20.0)).unwrap();
+        assert_eq!((wide.width(), wide.height()), (20, 10), "a target width applies to the SVG as drawn");
         assert_eq!(img.get_pixel(1, 1).0, [255, 0, 0, 255]);
         for f in [Format::Png, Format::Jpg, Format::Webp] {
             let bytes = encode(&img, f, 90).unwrap();

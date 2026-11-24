@@ -236,13 +236,14 @@ pub async fn call(app: &AppState, session: &str, name: &str, args: &Value) -> R<
         "export_combined_pdf" => {
             let doc = doc_for(app, args)?;
             let ids = ids_arg(args, "nodeIds")?;
+            let boxes = crate::export::browser_layout(Some(&app.hub), &doc, &ids).await?;
             let (bytes, name, head) = {
                 let mut d = doc.lock().unwrap();
                 for id in &ids {
                     live(&d.editor.doc, *id)?;
                 }
                 let name = s(args, "name").map(str::to_string).unwrap_or_else(|| d.editor.doc.name.clone());
-                (crate::export::combined_pdf(&mut d.editor.doc, &ids)?, name, header(&d))
+                (crate::export::combined_pdf(&mut d.editor.doc, &ids, &boxes)?, name, header(&d))
             };
             let dir = s(args, "dir").map(std::path::PathBuf::from).unwrap_or_else(crate::export::downloads_dir);
             let path = crate::export::save(&dir, &name, "pdf", &bytes)?;

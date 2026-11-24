@@ -10,7 +10,7 @@ import { Conn } from "./lib/conn";
 import { DocStore } from "./lib/doc";
 import { pendingReveal } from "./lib/doc";
 import { commandFor } from "./lib/keymap";
-import { renderToPng } from "./lib/render";
+import { measureBoard, renderToPng } from "./lib/render";
 import type { Agent, FileInfo, Patch, Snapshot } from "./lib/types";
 
 const token = sessionToken();
@@ -199,7 +199,7 @@ export function App() {
             target = snap ? new DocStore(conn, snap) : undefined;
           }
           if (!target) throw new Error("could not open the file to render it");
-          return renderToPng(target, m.node as string, Number(m.scale) || 1);
+          return m.measure ? measureBoard(target, m.node as string) : renderToPng(target, m.node as string, Number(m.scale) || 1);
         })()
           .then((data) => conn.send({ t: "rendered", callId: call, ok: true, data }))
           .catch((e: Error) => conn.send({ t: "rendered", callId: call, ok: false, error: e.message }));
