@@ -95,11 +95,15 @@ test("SVG and PDF export use the browser's layout, even for artboards the canvas
     await write(board.id, '<svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 0h10v10z"/></svg>');
     // Export turns the unturned box itself, so a rotated layer keeps its own size.
     await write(board.id, '<div style="position:absolute;left:300px;top:150px;width:80px;height:20px;rotate:90deg;background:#00ff00"></div>');
+    // A turned frame is the containing block of its absolute children, even when it's position: static.
+    await write(board.id, '<div style="position:static;margin-left:100px;width:60px;height:60px;rotate:45deg;background:#ffff00"><div style="position:absolute;left:10px;top:10px;width:10px;height:10px;background:#ff00ff"></div></div>');
     const out = await callJson<{ files: { path: string }[] }>(agent, "export", { nodes: { [board.id]: [{ format: "svg" }, { format: "pdf" }] } });
     const svg = readFileSync(out.files[0].path, "utf8");
     const box = (fill: string) => svg.match(new RegExp(`<rect x="([\\d.-]+)" y="([\\d.-]+)" width="([\\d.]+)" height="([\\d.]+)"[^>]*fill="${fill}"`))?.slice(1).map(Number) ?? [];
     expect(box("#0000ff").slice(0, 2)).toEqual([200, 0]);
     expect(box("#00ff00").slice(2)).toEqual([80, 20]);
+    const [[yx, yy], [mx, my]] = [box("#ffff00"), box("#ff00ff")];
+    expect([mx - yx, my - yy]).toEqual([10, 10]);
     expect((await PDFDocument.load(readFileSync(out.files[1].path))).getPageCount()).toBe(1);
 
     // On an artboard the canvas measures, the turned layer's box stays the canvas's turned bounds after an export.

@@ -316,9 +316,11 @@ fn tree(svg: &str) -> Result<usvg::Tree, String> {
 }
 
 /// Rasterizes SVG at `scale` with resvg (used when no UI window is available to render).
-pub fn rasterize(svg: &str, scale: f64) -> Result<image::RgbaImage, String> {
+pub fn rasterize(svg: &str, scale: Scale) -> Result<image::RgbaImage, String> {
     let tree = tree(svg)?;
     let size = tree.size();
+    // A target width or height applies to the image as drawn (a turned layer's SVG fits its turned bounds).
+    let scale = scale.factor(size.width() as f64, size.height() as f64);
     let (w, h) =
         ((size.width() as f64 * scale).ceil().max(1.0) as u32, (size.height() as f64 * scale).ceil().max(1.0) as u32);
     let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h).ok_or("image too large")?;
@@ -455,14 +457,13 @@ pub async fn export_node(
         Format::Html => format!("<!doctype html>\n<html>\n<head><meta charset=\"utf-8\"><title>{name}</title></head>\n<body style=\"margin:0\">\n{}</body>\n</html>\n", code.unwrap()).into_bytes(),
         Format::Jsx | Format::Tailwind => format!("export default function Design() {{\n  return (\n{}  );\n}}\n", code.unwrap().lines().map(|l| format!("    {l}\n")).collect::<String>()).into_bytes(),
         _ => {
-            let r = rect.ok_or_else(|| format!("{name} has no measured size yet; open the file in Spark once"))?;
-            let factor = scale.factor(r.w, r.h);
             let img = match (hub, svg) {
                 (Some(h), None) => {
-                    let png = h.render(&file, id, factor).await?;
+                    let r = rect.ok_or_else(|| format!("{name} has no measured size yet; open the file in Spark once"))?;
+                    let png = h.render(&file, id, scale.factor(r.w, r.h)).await?;
                     image::load_from_memory(&png).map_err(|e| e.to_string())?.to_rgba8()
                 }
-                (_, Some(svg)) => rasterize(&svg, factor)?,
+                (_, Some(svg)) => rasterize(&svg, scale)?,
                 (None, None) => unreachable!(),
             };
             encode(&img, format, quality)?
@@ -632,8 +633,10 @@ mod tests {
     #[test]
     fn rasterizes_encodes_and_makes_pdf() {
         let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><rect width="40" height="20" fill="#ff0000"/><text x="2" y="15" font-family="Geist" font-size="12">Hi</text></svg>"##;
-        let img = rasterize(svg, 2.0).unwrap();
+        let img = rasterize(svg, Scale::Factor(2.0)).unwrap();
         assert_eq!((img.width(), img.height()), (80, 40));
+        let wide = rasterize(svg, Scale::Width(20.0)).unwrap();
+        assert_eq!((wide.width(), wide.height()), (20, 10), "a target width applies to the SVG as drawn");
         assert_eq!(img.get_pixel(1, 1).0, [255, 0, 0, 255]);
         for f in [Format::Png, Format::Jpg, Format::Webp] {
             let bytes = encode(&img, f, 90).unwrap();

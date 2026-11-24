@@ -77,9 +77,9 @@ export function renderToPng(store: DocStore, nodeId: string, scale: number): Pro
 /** Lays out an artboard off screen and returns each layer's box relative to it, as the canvas measures them. */
 export function measureBoard(store: DocStore, boardId: string): Promise<Record<string, [number, number, number, number]>> {
   return offscreen(store, boardId, async (reg) => {
-    // Export draws each box unturned and applies the rotation itself; rotate doesn't change layout
-    // (frames are position: relative on the canvas, so they stay their children's containing block).
-    for (const el of reg.values()) el.style.rotate = "none";
+    // Export draws each box unturned and applies the rotation itself; rotate doesn't change layout.
+    // 0deg, not none, keeps a turned frame the containing block of its absolute children.
+    for (const el of reg.values()) if (el.style.rotate && el.style.rotate !== "none") el.style.rotate = "0deg";
     const origin = reg.get(boardId)?.getBoundingClientRect();
     if (!origin) throw new Error(`node ${boardId} did not render`);
     const round = (n: number) => Math.round(n * 100) / 100;
