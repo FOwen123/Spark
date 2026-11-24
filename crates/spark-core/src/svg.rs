@@ -503,14 +503,19 @@ pub fn node_svg(doc: &Document, id: NodeId, opts: &SvgOpts) -> Result<String, St
         .ok_or_else(|| format!("{id} has no measured size yet; open the file in Spark once so its layout is known"))?;
     // A layer inside a themed frame is drawn in that frame's theme.
     let theme = doc.ancestors(id).into_iter().find_map(|a| doc.node(a)?.theme.clone());
-    let mut g = Gen { doc, opts, origin: (r.x, r.y), defs: String::new(), next: 0, theme };
+    // A turned layer is drawn turned about its centre, so the image fits the turned bounds.
+    let turn = doc.node(id).and_then(|n| n.style.rotate).unwrap_or(0.0).to_radians();
+    let (cos, sin) = (turn.cos().abs(), turn.sin().abs());
+    let (w, h) = (r.w * cos + r.h * sin, r.w * sin + r.h * cos);
+    let origin = (r.x - (w - r.w) / 2.0, r.y - (h - r.h) / 2.0);
+    let mut g = Gen { doc, opts, origin, defs: String::new(), next: 0, theme };
     let mut body = String::new();
     g.node(&mut body, id);
     Ok(format!(
         r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{w}" height="{h}" viewBox="0 0 {w} {h}"><defs>{}</defs>{body}</svg>"#,
         g.defs,
-        w = num(r.w),
-        h = num(r.h)
+        w = num(w),
+        h = num(h)
     ))
 }
 
@@ -553,6 +558,28 @@ mod tests {
         assert!(svg.matches("<tspan").count() >= 2, "text wraps to the measured width: {svg}");
         assert!(node_svg(&doc, NodeId::new(999, 0), &SvgOpts { measure: &measure, asset: &|_| None }).is_err());
         let _ = Op::Delete { id: root };
+    }
+
+    #[test]
+    fn a_turned_layer_fits_its_turned_bounds() {
+        let mut doc = Document::new("Turn");
+        let page = doc.pages[0].id;
+        let imp = import(
+            &mut doc,
+            r##"<div style="width:80px;height:20px;rotate:90deg;background:#00ff00"></div>"##,
+            Parent::Page(page),
+            None,
+            &mut |_| ImageSrc::Failed(String::new()),
+        );
+        for op in imp.ops {
+            doc.apply(op).unwrap();
+        }
+        let root = imp.roots[0];
+        doc.set_measured(root, Rect { x: 0.0, y: 0.0, w: 80.0, h: 20.0 });
+        let measure = |t: &str, s: &TextStyle| t.chars().count() as f64 * s.size * 0.5;
+        let svg = node_svg(&doc, root, &SvgOpts { measure: &measure, asset: &|_| None }).unwrap();
+        assert!(svg.contains(r#"width="20" height="80" viewBox="0 0 20 80""#), "{svg}");
+        assert!(svg.contains(r#"<rect x="-30" y="30" width="80" height="20""#), "{svg}");
     }
 
     #[test]

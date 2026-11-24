@@ -3,7 +3,7 @@
 //! Files land in the user's Downloads (or a given folder) without overwriting anything.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
@@ -404,18 +404,17 @@ pub async fn export_node(
     scale: Scale,
     quality: u8,
 ) -> Result<(String, Vec<u8>), String> {
-    if matches!(format, Format::Svg | Format::Pdf) {
-        browser_layout(hub, doc, &[id]).await?;
-    }
+    let boxes =
+        if matches!(format, Format::Svg | Format::Pdf) { browser_layout(hub, doc, &[id]).await? } else { Boxes::new() };
     let (file, name, svg, rect, code) = {
         let mut d = doc.lock().unwrap();
         crate::layout::ensure(&mut d.editor.doc, id);
-        let n = d.editor.doc.node(id).ok_or_else(|| format!("node {id} not found"))?;
+        let name = d.editor.doc.node(id).ok_or_else(|| format!("node {id} not found"))?.name.clone();
         let rect = d.editor.doc.measured.get(&id).copied();
         let svg = if matches!(format, Format::Svg | Format::Pdf)
             || (format.is_raster() && hub.is_none_or(|h| h.client_ids().is_empty()))
         {
-            Some(node_svg(&d.editor.doc, id)?)
+            Some(with_boxes(&mut d.editor.doc, &boxes, |doc| node_svg(doc, id))?)
         } else {
             None
         };
@@ -448,7 +447,7 @@ pub async fn export_node(
             }
             _ => None,
         };
-        (d.id().to_string(), n.name.clone(), svg, rect, code)
+        (d.id().to_string(), name, svg, rect, code)
     };
     let bytes = match format {
         Format::Svg => svg.unwrap().into_bytes(),
@@ -472,11 +471,15 @@ pub async fn export_node(
     Ok((name, bytes))
 }
 
+/// Layer boxes (world space, unturned) that stand in for the measured ones while exporting.
+pub type Boxes = HashMap<NodeId, spark_core::Rect>;
+
 /// When a Spark window is connected, lays out the artboards holding `ids` in the browser and
-/// records those boxes, so SVG and PDF match the canvas instead of Spark's own approximate
+/// returns those boxes, so SVG and PDF match the canvas instead of Spark's own approximate
 /// layout (which also stands in for artboards the canvas hasn't drawn up close).
-pub async fn browser_layout(hub: Option<&Hub>, doc: &crate::hub::DocRef, ids: &[NodeId]) -> Result<(), String> {
-    let Some(hub) = hub.filter(|h| !h.client_ids().is_empty()) else { return Ok(()) };
+pub async fn browser_layout(hub: Option<&Hub>, doc: &crate::hub::DocRef, ids: &[NodeId]) -> Result<Boxes, String> {
+    let mut boxes = Boxes::new();
+    let Some(hub) = hub.filter(|h| !h.client_ids().is_empty()) else { return Ok(boxes) };
     let (file, boards) = {
         let d = doc.lock().unwrap();
         let mut boards: Vec<NodeId> = Vec::new();
@@ -497,18 +500,36 @@ pub async fn browser_layout(hub: Option<&Hub>, doc: &crate::hub::DocRef, ids: &[
             let (Ok(id), Some(a)) = (id.parse::<NodeId>(), r.as_array()) else { continue };
             let n: Vec<f64> = a.iter().filter_map(serde_json::Value::as_f64).collect();
             if let [x, y, w, h] = n[..] {
-                d.editor.doc.set_measured(id, spark_core::Rect { x: origin.x + x, y: origin.y + y, w, h });
+                boxes.insert(id, spark_core::Rect { x: origin.x + x, y: origin.y + y, w, h });
             }
         }
     }
-    Ok(())
+    Ok(boxes)
+}
+
+/// Runs `f` with `boxes` in place of the measured ones, then puts those back: export boxes are
+/// unturned, while the canvas and agents keep the canvas's own (turned) bounds.
+fn with_boxes<T>(doc: &mut Document, boxes: &Boxes, f: impl FnOnce(&Document) -> T) -> T {
+    if boxes.is_empty() {
+        return f(doc);
+    }
+    let saved = doc.measured.clone();
+    doc.measured.extend(boxes);
+    let out = f(doc);
+    doc.measured = saved;
+    out
 }
 
 /// Exports several nodes as one PDF, a page each, ordered top to bottom then left to right.
-pub fn combined_pdf(doc: &mut Document, ids: &[NodeId]) -> Result<Vec<u8>, String> {
+/// `boxes` come from `browser_layout`.
+pub fn combined_pdf(doc: &mut Document, ids: &[NodeId], boxes: &Boxes) -> Result<Vec<u8>, String> {
     for id in ids {
         crate::layout::ensure(doc, *id);
     }
+    with_boxes(doc, boxes, |doc| combined_pdf_of(doc, ids))
+}
+
+fn combined_pdf_of(doc: &Document, ids: &[NodeId]) -> Result<Vec<u8>, String> {
     let mut ordered: Vec<(NodeId, spark_core::Rect)> = ids
         .iter()
         .map(|id| doc.measured.get(id).map(|r| (*id, *r)).ok_or_else(|| format!("{id} has no measured size yet")))

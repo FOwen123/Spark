@@ -192,7 +192,7 @@ async fn export(
     }
     let dir = out.unwrap_or_else(|| PathBuf::from("."));
     if combined {
-        let bytes = ex::combined_pdf(&mut doc, &ids).map_err(anyhow::Error::msg)?;
+        let bytes = ex::combined_pdf(&mut doc, &ids, &Default::default()).map_err(anyhow::Error::msg)?;
         say(&ex::save(&dir, &doc.name, "pdf", &bytes).map_err(anyhow::Error::msg)?.display().to_string());
         return Ok(());
     }

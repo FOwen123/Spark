@@ -183,10 +183,10 @@ fn handle(hub: &Arc<Hub>, client: ClientId, tx: &Tx, msg: Value) {
                     let dir = crate::export::downloads_dir();
                     let mut paths = Vec::new();
                     if msg["combined"].as_bool().unwrap_or(false) {
-                        crate::export::browser_layout(Some(&hub), &doc, &ids).await?;
+                        let boxes = crate::export::browser_layout(Some(&hub), &doc, &ids).await?;
                         let (bytes, name) = {
                             let mut d = doc.lock().unwrap();
-                            (crate::export::combined_pdf(&mut d.editor.doc, &ids)?, d.editor.doc.name.clone())
+                            (crate::export::combined_pdf(&mut d.editor.doc, &ids, &boxes)?, d.editor.doc.name.clone())
                         };
                         paths.push(crate::export::save(&dir, &name, "pdf", &bytes)?);
                     } else {
